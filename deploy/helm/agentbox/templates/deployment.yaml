@@ -2,7 +2,13 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agentbox
+  namespace: {{ .Release.Namespace }}
   labels: {app.kubernetes.io/name: agentbox}
+  annotations:
+    checkov.io/skip1: "CKV_K8S_21=Namespace is set via .Release.Namespace; 'default' only appears when Checkov renders without a values override"
+    checkov.io/skip2: "CKV_K8S_38=SA token required: controller calls Kubernetes API to manage Jobs"
+    checkov.io/skip3: "CKV_K8S_35=Secret mounted as env var; volume-file hardening tracked as future work"
+    checkov.io/skip4: "CKV_K8S_43=Image digest pinning handled in CI via Trivy scan on every built image"
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -10,10 +16,6 @@ spec:
   template:
     metadata:
       labels: {app.kubernetes.io/name: agentbox}
-      annotations:
-        checkov.io/skip1: "CKV_K8S_38=SA token required: controller calls Kubernetes API to manage Jobs"
-        checkov.io/skip2: "CKV_K8S_35=Secret mounted as env var; volume-file approach tracked as future hardening"
-        checkov.io/skip3: "CKV_K8S_43=Image digest pinning delegated to CI (SBOM + Trivy scan on every build)"
     spec:
       serviceAccountName: agentbox-controller
       automountServiceAccountToken: true  # required: controller calls K8s API to manage Jobs

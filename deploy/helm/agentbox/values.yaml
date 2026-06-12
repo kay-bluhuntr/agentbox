@@ -10,6 +10,7 @@ execNamespace: agentbox-exec
 database:
   # In production this comes from a Secret (e.g. ExternalSecrets -> AWS Secrets Manager).
   # The chart reads it from an existing secret to keep credentials out of values files.
+  # checkov:skip=CKV_SECRET_6: these are Secret reference names, not secret values
   existingSecret: agentbox-db
   secretKey: database-url
 
