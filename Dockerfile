@@ -11,9 +11,7 @@ RUN pip install --no-cache-dir --prefix=/install .
 # --- runtime stage ------------------------------------------------------------
 FROM python:3.13-slim-bookworm
 
-# Run as non-root: same rule we enforce on the workloads applies to the control plane.
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
-# Run as non-root: same rule we enforce on the workloads applies to the control plane.
 RUN groupadd -r agentbox && useradd -r -g agentbox -u 10001 agentbox
 
 COPY --from=build /install /usr/local

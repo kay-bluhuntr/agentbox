@@ -1,0 +1,24 @@
+# CVEs with no available fix in Debian Bookworm as of 2026-06-13.
+# Reviewed: apt-get upgrade is run at build time so any released patch is applied.
+# Re-evaluate each entry when status changes from affected/fix_deferred/will_not_fix.
+
+# zlib1g: integer overflow in zipOpenNewFileInZip4_6 — Debian marked will_not_fix
+# Impact: only reachable via crafted ZIP files; agentbox does not process user-supplied ZIPs
+CVE-2023-45853
+
+# libsqlite3-0: integer overflow — no Debian fix available (status: affected)
+# Impact: only reachable via crafted DB files; agentbox uses SQLite only in tests (SQLAlchemy)
+CVE-2025-7458
+
+# ncurses: buffer overflow — no Debian fix available (status: affected)
+# These packages are purged in the Dockerfile; entry kept as belt-and-braces
+CVE-2025-69720
+
+# perl-base: multiple CVEs — fix_deferred or affected (no released Debian patch)
+# perl-base is purged in the Dockerfile; entries kept as belt-and-braces
+CVE-2026-42496
+CVE-2026-42497
+CVE-2026-48959
+CVE-2026-48962
+CVE-2026-8376
+CVE-2026-9538
