@@ -20,6 +20,7 @@ provider "aws" {
 }
 
 module "vpc" {
+  # checkov:skip=CKV_TF_1: Registry module — version constraint is the correct pin, not a git commit hash
   source  = "terraform-aws-modules/vpc/aws"
   version = "~> 5.8"
 
@@ -37,6 +38,7 @@ module "vpc" {
 }
 
 module "eks" {
+  # checkov:skip=CKV_TF_1: Registry module — version constraint is the correct pin, not a git commit hash
   source  = "terraform-aws-modules/eks/aws"
   version = "~> 20.8"
 
@@ -62,6 +64,7 @@ module "eks" {
 }
 
 module "db" {
+  # checkov:skip=CKV_TF_1: Registry module — version constraint is the correct pin, not a git commit hash
   source  = "terraform-aws-modules/rds/aws"
   version = "~> 6.5"
 
@@ -87,6 +90,7 @@ module "db" {
 }
 
 module "db_sg" {
+  # checkov:skip=CKV_TF_1: Registry module — version constraint is the correct pin, not a git commit hash
   source  = "terraform-aws-modules/security-group/aws"
   version = "~> 5.1"
 

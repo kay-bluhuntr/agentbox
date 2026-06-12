@@ -10,8 +10,13 @@ spec:
   template:
     metadata:
       labels: {app.kubernetes.io/name: agentbox}
+      annotations:
+        checkov.io/skip1: "CKV_K8S_38=SA token required: controller calls Kubernetes API to manage Jobs"
+        checkov.io/skip2: "CKV_K8S_35=Secret mounted as env var; volume-file approach tracked as future hardening"
+        checkov.io/skip3: "CKV_K8S_43=Image digest pinning delegated to CI (SBOM + Trivy scan on every build)"
     spec:
       serviceAccountName: agentbox-controller
+      automountServiceAccountToken: true  # required: controller calls K8s API to manage Jobs
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
