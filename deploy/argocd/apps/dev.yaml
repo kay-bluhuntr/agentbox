@@ -1,0 +1,34 @@
+# Dev environment. Multi-source Application (ArgoCD 2.6+): the chart and the
+# environment values live in different paths of the same repo, and `ref`
+# lets valueFiles reach outside the chart directory. Fully automated sync:
+# every image tag CI commits to deploy/envs/dev lands here within one
+# reconcile interval.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: agentbox-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://github.com/kayode-odewale/agentbox
+      targetRevision: main
+      path: deploy/helm/agentbox
+      helm:
+        releaseName: agentbox
+        valueFiles:
+          - $values/deploy/envs/dev/values.yaml
+    - repoURL: https://github.com/kayode-odewale/agentbox
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: agentbox-dev
+  syncPolicy:
+    automated:
+      prune: true     # resources removed from Git are removed from the cluster
+      selfHeal: true  # hand-edits to the cluster are reverted: Git is authoritative
+    syncOptions:
+      - CreateNamespace=true

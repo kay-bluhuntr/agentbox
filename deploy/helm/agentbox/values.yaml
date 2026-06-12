@@ -1,0 +1,30 @@
+image:
+  repository: ghcr.io/kayode-odewale/agentbox
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicaCount: 2  # safe: reconciler leader-elects via Postgres advisory lock
+
+execNamespace: agentbox-exec
+
+database:
+  # In production this comes from a Secret (e.g. ExternalSecrets -> AWS Secrets Manager).
+  # The chart reads it from an existing secret to keep credentials out of values files.
+  existingSecret: agentbox-db
+  secretKey: database-url
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# Guardrails applied to the execution namespace
+execQuota:
+  pods: "50"
+  requestsCpu: "10"
+  requestsMemory: 20Gi
+  limitsCpu: "20"
+  limitsMemory: 40Gi

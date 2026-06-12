@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentbox
+  labels: {app.kubernetes.io/name: agentbox}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: agentbox}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: agentbox}
+    spec:
+      serviceAccountName: agentbox-controller
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports: [{containerPort: 8080, name: http}]
+          env:
+            - name: AGENTBOX_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.secretKey }}
+            - name: AGENTBOX_EXEC_NAMESPACE
+              value: {{ .Values.execNamespace }}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}

@@ -1,0 +1,28 @@
+# App-of-apps root: the only manifest ever applied by hand (once, at
+# bootstrap). It points ArgoCD at deploy/argocd/apps/, so adding or changing
+# an environment is a pull request against that directory — ArgoCD picks the
+# new Application up itself. After this, Git is the only deployment interface.
+#
+#   kubectl apply -f deploy/argocd/root.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: agentbox-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/kayode-odewale/agentbox
+    targetRevision: main
+    path: deploy/argocd/apps
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

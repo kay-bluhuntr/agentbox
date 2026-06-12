@@ -1,0 +1,22 @@
+# Dev environment overrides.
+#
+# This file is the GitOps handoff point: CI commits the image tag of every
+# main-branch build here (see .github/workflows/ci.yml, deploy-dev job), and
+# ArgoCD converges the dev cluster to match. Humans don't edit `image.tag`.
+# Everything else in this file is owned by humans, via pull request.
+
+image:
+  repository: ghcr.io/kayode-odewale/agentbox
+  tag: "initial"  # managed by CI — do not edit by hand
+
+replicaCount: 1  # dev: one replica is plenty; leader election still exercised
+
+execNamespace: agentbox-exec-dev
+
+# Smaller blast radius in dev: tighter aggregate quota on the exec namespace.
+execQuota:
+  pods: "20"
+  requestsCpu: "4"
+  requestsMemory: 8Gi
+  limitsCpu: "8"
+  limitsMemory: 16Gi

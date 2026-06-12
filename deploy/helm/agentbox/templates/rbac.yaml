@@ -1,0 +1,33 @@
+# The controller's identity. Least privilege: it can manage Jobs and read
+# Pods/logs in the execution namespace only — not cluster-wide.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agentbox-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agentbox-controller
+  namespace: {{ .Values.execNamespace }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agentbox-controller
+  namespace: {{ .Values.execNamespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agentbox-controller
+subjects:
+  - kind: ServiceAccount
+    name: agentbox-controller
+    namespace: {{ .Release.Namespace }}

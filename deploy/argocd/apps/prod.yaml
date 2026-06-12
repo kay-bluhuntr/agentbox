@@ -1,0 +1,35 @@
+# Production. Sync is just as automated as dev — the gate is not a manual
+# sync button, it's the pull request that changes deploy/envs/prod. Review
+# happens in Git, where it leaves a record; the cluster only ever follows.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: agentbox-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Surface sync failures loudly (ArgoCD notifications -> Slack/etc.)
+    notifications.argoproj.io/subscribe.on-sync-failed.slack: platform-alerts
+spec:
+  project: default
+  sources:
+    - repoURL: https://github.com/kayode-odewale/agentbox
+      targetRevision: main
+      path: deploy/helm/agentbox
+      helm:
+        releaseName: agentbox
+        valueFiles:
+          - $values/deploy/envs/prod/values.yaml
+    - repoURL: https://github.com/kayode-odewale/agentbox
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: agentbox
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

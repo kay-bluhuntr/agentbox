@@ -1,0 +1,41 @@
+# The execution namespace: where workloads run, fenced off from everything else.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.execNamespace }}
+  labels:
+    agentbox.io/role: execution
+    pod-security.kubernetes.io/enforce: restricted
+---
+# Default-deny all ingress and egress for workloads. Sandboxed code gets no
+# network unless a policy explicitly grants it (DNS is deliberately excluded too).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: {{ .Values.execNamespace }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# Cap aggregate resource usage so a burst of sessions can't starve the cluster.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: agentbox-exec-quota
+  namespace: {{ .Values.execNamespace }}
+spec:
+  hard:
+    pods: {{ .Values.execQuota.pods | quote }}
+    requests.cpu: {{ .Values.execQuota.requestsCpu | quote }}
+    requests.memory: {{ .Values.execQuota.requestsMemory | quote }}
+    limits.cpu: {{ .Values.execQuota.limitsCpu | quote }}
+    limits.memory: {{ .Values.execQuota.limitsMemory | quote }}
+---
+# Identity for workload pods. No RBAC bindings, no API token mounted.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agentbox-runner
+  namespace: {{ .Values.execNamespace }}
+automountServiceAccountToken: false

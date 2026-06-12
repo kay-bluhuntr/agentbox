@@ -1,0 +1,21 @@
+# Production environment overrides.
+#
+# Promotion is a pull request: run `scripts/promote.sh` to copy the tag
+# currently running in dev into this file, then open a PR. The diff *is*
+# the change record — what's deploying, who approved it, and when. ArgoCD
+# applies it on merge; nobody runs helm against prod by hand.
+
+image:
+  repository: ghcr.io/kayode-odewale/agentbox
+  tag: "initial"  # promoted from dev via PR — see scripts/promote.sh
+
+replicaCount: 2  # HA control plane; reconciler leader-elects via Postgres
+
+execNamespace: agentbox-exec
+
+execQuota:
+  pods: "50"
+  requestsCpu: "10"
+  requestsMemory: 20Gi
+  limitsCpu: "20"
+  limitsMemory: 40Gi

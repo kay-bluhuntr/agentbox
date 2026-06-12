@@ -1,0 +1,115 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agentbox
+          POSTGRES_PASSWORD: agentbox
+          POSTGRES_DB: agentbox
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U agentbox"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check .
+      - name: Tests (SQLite)
+        run: pytest tests/ -v
+      - name: Tests (Postgres)
+        run: pytest tests/ -v
+        env:
+          AGENTBOX_TEST_DATABASE_URL: postgresql+psycopg://agentbox:agentbox@localhost:5432/agentbox
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Shift-left: scan IaC for misconfigurations before anything ships
+      - name: Scan Terraform & Kubernetes manifests (Checkov)
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: deploy/
+          quiet: true
+          soft_fail: false
+
+  build:
+    needs: [test, security]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          tags: agentbox:${{ github.sha }}
+      # Scan the built image for CVEs before it can be pushed
+      - name: Scan image (Trivy)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: agentbox:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+      - name: Log in to GHCR
+        if: github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push image
+        if: github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:latest
+
+  # GitOps handoff: deployment happens by committing the new image tag to
+  # the dev environment's values file. ArgoCD (deploy/argocd/apps/dev.yaml)
+  # notices the Git change and converges the cluster — CI never touches
+  # the cluster and holds no kubeconfig. Promotion to prod is a PR
+  # (scripts/promote.sh), reviewed in Git like any other change.
+  deploy-dev:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pin new image tag in dev values
+        run: |
+          sed -i -E "s|^(\s+tag:).*# managed by CI.*|\1 \"${GITHUB_SHA}\"  # managed by CI — do not edit by hand|" \
+            deploy/envs/dev/values.yaml
+          git diff --quiet && { echo "tag unchanged, nothing to do"; exit 0; }
+          git config user.name "agentbox-ci"
+          git config user.email "agentbox-ci@users.noreply.github.com"
+          git add deploy/envs/dev/values.yaml
+          # [skip ci] stops the bump commit from triggering this workflow again
+          git commit -m "ci: deploy ${GITHUB_SHA::7} to dev [skip ci]"
+          git push
