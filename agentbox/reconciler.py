@@ -44,9 +44,9 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def _aware(dt: datetime | None) -> datetime | None:
+def _aware(dt: datetime) -> datetime:
     """SQLite (used in tests) drops tzinfo; normalise to UTC-aware."""
-    if dt is not None and dt.tzinfo is None:
+    if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt
 
@@ -128,7 +128,8 @@ class Reconciler:
         elif state in (State.SCHEDULED, State.RUNNING):
             self._observe(s, now)
         elif state == State.RETRYING:
-            if s.next_retry_at is None or now >= _aware(s.next_retry_at):
+            retry_at = s.next_retry_at
+            if retry_at is None or now >= _aware(retry_at):
                 self._submit(s)
         elif is_terminal(state):
             self._maybe_cleanup(s, now)
@@ -164,6 +165,7 @@ class Reconciler:
             self._timeout(s, now)
             return
 
+        assert s.executor_ref is not None
         status = self.executor.status(s.executor_ref)
 
         if status.phase == WorkloadPhase.RUNNING and State(s.state) == State.SCHEDULED:
@@ -211,6 +213,7 @@ class Reconciler:
             log.info("session_failed", session_id=s.id, reason=reason)
 
     def _timeout(self, s: Session, now: datetime) -> None:
+        assert s.executor_ref is not None
         try:
             self.executor.cancel(s.executor_ref)
         except Exception:
@@ -222,10 +225,10 @@ class Reconciler:
         log.info("session_timed_out", session_id=s.id)
 
     def _maybe_cleanup(self, s: Session, now: datetime) -> None:
-        finished_at = _aware(s.finished_at)
-        if finished_at is None:
+        if s.finished_at is None:
             s.cleaned_at = now
             return
+        finished_at = _aware(s.finished_at)
         if (now - finished_at).total_seconds() < self.settings.terminal_ttl_seconds:
             return
         if s.executor_ref:

@@ -19,7 +19,7 @@ jobs:
           POSTGRES_USER: agentbox
           POSTGRES_PASSWORD: agentbox
           POSTGRES_DB: agentbox
-        ports: ["5432:5432"]
+        ports: ["5433:5432"]
         options: >-
           --health-cmd "pg_isready -U agentbox"
           --health-interval 2s
@@ -39,7 +39,7 @@ jobs:
       - name: Tests (Postgres)
         run: pytest tests/ -v
         env:
-          AGENTBOX_TEST_DATABASE_URL: postgresql+psycopg://agentbox:agentbox@localhost:5432/agentbox
+          AGENTBOX_TEST_DATABASE_URL: postgresql+psycopg://agentbox:agentbox@localhost:5433/agentbox
 
   security:
     runs-on: ubuntu-latest

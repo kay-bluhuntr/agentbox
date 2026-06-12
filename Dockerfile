@@ -1,5 +1,5 @@
 # --- build stage -------------------------------------------------------------
-FROM python:3.12.16-slim-bookworm AS build
+FROM python:3.13-slim-bookworm AS build
 
 WORKDIR /app
 COPY pyproject.toml README.md ./
@@ -9,7 +9,7 @@ RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir --prefix=/install .
 
 # --- runtime stage ------------------------------------------------------------
-FROM python:3.12.16-slim-bookworm
+FROM python:3.13-slim-bookworm
 
 # Run as non-root: same rule we enforce on the workloads applies to the control plane.
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*

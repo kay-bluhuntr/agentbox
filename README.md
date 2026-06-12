@@ -63,7 +63,7 @@ make smoke        # runs the smoke test against the cluster
 ### Submit a workload
 
 ```bash
-curl -X POST http://localhost:8000/v1/sessions \
+curl -X POST http://localhost:8080/v1/sessions \
   -H 'Content-Type: application/json' \
   -d '{
     "image": "python:3.12-slim",
@@ -89,19 +89,19 @@ Response:
 ### Poll for result
 
 ```bash
-curl http://localhost:8000/v1/sessions/a3f1c2d4-...
+curl http://localhost:8080/v1/sessions/a3f1c2d4-...
 ```
 
 ### Get logs
 
 ```bash
-curl http://localhost:8000/v1/sessions/a3f1c2d4-.../logs
+curl http://localhost:8080/v1/sessions/a3f1c2d4-.../logs
 ```
 
 ### Cancel
 
 ```bash
-curl -X DELETE http://localhost:8000/v1/sessions/a3f1c2d4-...
+curl -X DELETE http://localhost:8080/v1/sessions/a3f1c2d4-...
 ```
 
 ## Session lifecycle
@@ -144,6 +144,16 @@ deploy/
 ```
 
 ## Development
+
+The project requires Python 3.11+. If your system default is older, create a venv explicitly:
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+Then:
 
 ```bash
 make test       # run the test suite

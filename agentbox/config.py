@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # Database
-    database_url: str = "postgresql+psycopg://agentbox:agentbox@localhost:5432/agentbox"
+    database_url: str = "postgresql+psycopg://agentbox:agentbox@localhost:5433/agentbox"
 
     # Executor: "kubernetes" in real deployments, "local" for laptop dev without a cluster
     executor: str = "kubernetes"

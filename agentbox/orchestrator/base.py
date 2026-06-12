@@ -7,6 +7,7 @@ executor (Firecracker, ECS, a second cluster) is a new module rather than
 a rewrite.
 """
 
+import os
 import subprocess
 from dataclasses import dataclass
 from enum import StrEnum
@@ -79,7 +80,7 @@ class LocalExecutor:
         ref = f"local-{spec.session_id}-{spec.attempt}"
         proc = subprocess.Popen(
             spec.command,
-            env={**spec.env},
+            env={**os.environ, **spec.env},
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
