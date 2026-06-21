@@ -1,6 +1,7 @@
 .PHONY: dev test lint typecheck build kind-up kind-down deploy smoke clean
 
 dev:  ## Run API + Postgres locally (local executor, no cluster needed)
+	@test -f .env || { cp .env.example .env && echo "created .env from .env.example"; }
 	docker compose up --build
 
 test:  ## Run the test suite

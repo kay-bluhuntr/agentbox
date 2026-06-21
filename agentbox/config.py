@@ -13,7 +13,9 @@ class Settings(BaseSettings):
     service_name: str = "agentbox"
     log_level: str = "INFO"
 
-    # Database
+    # Database. This default is a local-dev convenience only — real deployments
+    # override it via AGENTBOX_DATABASE_URL, sourced from a Kubernetes Secret
+    # (Helm: database.existingSecret; prod: ExternalSecrets -> Secrets Manager).
     database_url: str = "postgresql+psycopg://agentbox:agentbox@localhost:5433/agentbox"
 
     # Executor: "kubernetes" in real deployments, "local" for laptop dev without a cluster

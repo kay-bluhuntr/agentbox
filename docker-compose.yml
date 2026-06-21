@@ -1,11 +1,14 @@
 # Local development stack: Postgres + the API in "local" executor mode.
 # For the real Kubernetes path, use `make kind-up` instead.
+#
+# The Postgres password is read from .env (gitignored; see .env.example).
+# `make dev` creates .env from the example on first run.
 services:
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: agentbox
-      POSTGRES_PASSWORD: agentbox
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (copy .env.example)}
       POSTGRES_DB: agentbox
     ports:
       - "5433:5432"
@@ -18,7 +21,7 @@ services:
   api:
     build: .
     environment:
-      AGENTBOX_DATABASE_URL: postgresql+psycopg://agentbox:agentbox@postgres:5432/agentbox
+      AGENTBOX_DATABASE_URL: postgresql+psycopg://agentbox:${POSTGRES_PASSWORD}@postgres:5432/agentbox
       AGENTBOX_EXECUTOR: local
     ports:
       - "8080:8080"

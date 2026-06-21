@@ -13,6 +13,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     services:
+      # Ephemeral throwaway DB: lives only for this job, never network-exposed.
+      # Not a real secret — the password is fixed so the test step can connect.
       postgres:
         image: postgres:16-alpine
         env:
