@@ -7,7 +7,7 @@
 
 image:
   repository: ghcr.io/kayode-odewale/agentbox
-  tag: "initial"  # managed by CI — do not edit by hand
+  tag: "b9fdc58de98548c8a9823bf9b89ce106ff734bbb"  # managed by CI — do not edit by hand
 
 replicaCount: 1  # dev: one replica is plenty; leader election still exercised
 
