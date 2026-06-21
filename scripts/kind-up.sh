@@ -48,6 +48,7 @@ helm upgrade --install agentbox deploy/helm/agentbox \
   --namespace agentbox \
   --set image.repository=agentbox \
   --set image.tag=dev \
+  --set image.pullPolicy=IfNotPresent \
   --set replicaCount=1
 
 kubectl -n agentbox rollout status deploy/agentbox --timeout=120s
