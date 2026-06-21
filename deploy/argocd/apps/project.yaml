@@ -1,0 +1,39 @@
+# AppProject: the RBAC boundary for everything AgentBox. It constrains what the
+# dev/prod Applications are allowed to do — which Git repo they may deploy from,
+# which cluster namespaces they may touch, and which cluster-scoped resources
+# they may create. A compromised or fat-fingered Application can't deploy a
+# random chart from a random repo into kube-system.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: agentbox
+  namespace: argocd
+  annotations:
+    # Apply before the Applications that reference it.
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: AgentBox control plane and sandboxed execution
+  # Only this repo may be a source.
+  sourceRepos:
+    - https://github.com/kayode-odewale/agentbox
+  # Only these namespaces may be deployment targets.
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: agentbox
+    - server: https://kubernetes.default.svc
+      namespace: agentbox-dev
+    - server: https://kubernetes.default.svc
+      namespace: agentbox-exec
+    - server: https://kubernetes.default.svc
+      namespace: agentbox-exec-dev
+  # Cluster-scoped resources are dangerous; allow only the one we actually need.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  # Namespaced resources: allow all (the chart spans Deployments, RBAC, NetworkPolicy,
+  # ServiceMonitor, Rollout, etc.) — the real fence is sourceRepos + destinations.
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"

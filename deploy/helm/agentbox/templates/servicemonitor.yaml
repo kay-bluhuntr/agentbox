@@ -1,0 +1,22 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+# Observability bootstrap: teams (and the platform's own control plane) opt into
+# scraping by shipping a ServiceMonitor, not by editing the central Prometheus.
+# Requires the Prometheus Operator CRDs in-cluster.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: agentbox
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: agentbox
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: agentbox}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+{{- end }}

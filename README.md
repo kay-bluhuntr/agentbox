@@ -136,12 +136,37 @@ ArgoCD manifests and Helm charts are in [`deploy/`](deploy/). Separate value fil
 
 ```
 deploy/
-  helm/agentbox/        # Helm chart (deployment, RBAC, NetworkPolicy, ResourceQuota)
-  envs/dev/values.yaml
-  envs/prod/values.yaml
-  argocd/               # GitOps app definitions
+  helm/agentbox/        # Helm chart (Deployment/Rollout, RBAC, NetworkPolicy,
+                        #   ResourceQuota, ServiceMonitor, PrometheusRule)
+  envs/dev/values.yaml  # fast iteration: plain Deployment, no canary
+  envs/prod/values.yaml # full pattern: ServiceMonitor + alerts + canary rollout
+  argocd/               # App-of-apps root, AppProject, dev/prod Applications
   terraform/            # cluster-level infra
 ```
+
+### Platform capabilities
+
+The chart is feature-flagged so the same templates serve a bare kind cluster and a
+fully-instrumented production cluster:
+
+- **Progressive delivery** (`rollout.enabled`): ships the control plane as an
+  [Argo Rollouts](https://argoproj.github.io/rollouts/) `Rollout` with a canary
+  strategy instead of a `Deployment`. The `AnalysisTemplate` gates promotion on
+  the control plane's *own* health signals — reconcile error ratio and API p99
+  latency — so a regression auto-rolls-back before reaching every replica. Enabled
+  in prod, off in dev (speed over safety there). Stable/canary share one pod spec
+  via [`_helpers.tpl`](deploy/helm/agentbox/templates/_helpers.tpl).
+- **Observability bootstrap** (`metrics.serviceMonitor.enabled`,
+  `monitoring.prometheusRule.enabled`): a `ServiceMonitor` so Prometheus scrapes
+  `/metrics`, plus alerts (reconciler stalled, high API latency, session failure
+  rate) and a Google-SRE multi-window **burn-rate SLO** on reconcile success.
+- **GitOps guardrails**: an ArgoCD `AppProject` fences every Application to this
+  repo and the AgentBox namespaces; `sync-wave` annotations apply the namespace,
+  NetworkPolicy, quota, and RBAC (wave -1) before the workload (wave 0).
+
+These need the Prometheus Operator and Argo Rollouts CRDs in-cluster, so they
+default off in the base chart (the kind dev path stays dependency-free) and are
+switched on in [`envs/prod/values.yaml`](deploy/envs/prod/values.yaml).
 
 ## Development
 

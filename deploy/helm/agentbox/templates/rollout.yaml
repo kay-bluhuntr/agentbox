@@ -1,0 +1,85 @@
+{{- if .Values.rollout.enabled }}
+# Progressive delivery as a platform primitive. When rollout.enabled is set,
+# the control plane ships as an Argo Rollouts Rollout instead of a Deployment:
+# a new version takes a slice of traffic, an AnalysisTemplate watches the
+# control plane's own health metrics, and a regression auto-rolls-back before
+# it reaches every replica. Requires the Argo Rollouts controller in-cluster.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: agentbox
+  namespace: {{ .Release.Namespace }}
+  labels: {app.kubernetes.io/name: agentbox}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: agentbox}
+  strategy:
+    canary:
+      # Two Services: stable keeps serving while canary receives the new pods.
+      # No service mesh needed — replica-weighted splitting is enough at this scale.
+      stableService: agentbox
+      canaryService: agentbox-canary
+      steps:
+        - setWeight: {{ .Values.rollout.canaryWeight }}
+        - pause: {duration: {{ .Values.rollout.pauseDuration }}}
+        - analysis:
+            templates:
+              - templateName: agentbox-control-plane
+        - setWeight: 50
+        - pause: {duration: {{ .Values.rollout.pauseDuration }}}
+        - setWeight: 100
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: agentbox}
+    spec:
+      {{- include "agentbox.podSpec" . | nindent 6 }}
+---
+# Canary Service: same selector as the stable Service, Argo Rollouts manages
+# which pods sit behind each during a rollout.
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentbox-canary
+  namespace: {{ .Release.Namespace }}
+  labels: {app.kubernetes.io/name: agentbox}
+spec:
+  selector: {app.kubernetes.io/name: agentbox}
+  ports: [{port: 80, targetPort: http, name: http}]
+---
+# What "healthy" means for the control plane. These are the signals that
+# actually distinguish a good release from a bad one for *this* service —
+# not generic HTTP error rates. A reconciler that can't talk to the Kubernetes
+# API (the RBAC regression we hit earlier) shows up immediately as a spike in
+# the error ratio and fails the canary.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: agentbox-control-plane
+  namespace: {{ .Release.Namespace }}
+spec:
+  metrics:
+    - name: reconcile-error-ratio
+      interval: 1m
+      count: 5
+      successCondition: result[0] <= {{ .Values.rollout.analysis.maxReconcileErrorRatio }}
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: {{ .Values.rollout.analysis.prometheusAddress | quote }}
+          query: |
+            sum(rate(agentbox_reconcile_errors_total[2m]))
+            /
+            clamp_min(sum(rate(agentbox_reconcile_loops_total[2m])), 1)
+    - name: api-p99-latency-seconds
+      interval: 1m
+      count: 5
+      successCondition: result[0] <= {{ .Values.rollout.analysis.maxApiP99Seconds }}
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: {{ .Values.rollout.analysis.prometheusAddress | quote }}
+          query: |
+            histogram_quantile(0.99,
+              sum(rate(agentbox_api_request_seconds_bucket[2m])) by (le))
+{{- end }}

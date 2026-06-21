@@ -12,7 +12,7 @@ metadata:
     # Surface sync failures loudly (ArgoCD notifications -> Slack/etc.)
     notifications.argoproj.io/subscribe.on-sync-failed.slack: platform-alerts
 spec:
-  project: default
+  project: agentbox
   sources:
     - repoURL: https://github.com/kayode-odewale/agentbox
       targetRevision: main

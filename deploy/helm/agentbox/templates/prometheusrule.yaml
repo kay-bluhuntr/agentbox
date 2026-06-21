@@ -1,0 +1,90 @@
+{{- if .Values.monitoring.prometheusRule.enabled }}
+# Alerts and SLO for the control plane, derived from the metrics the app emits
+# (agentbox/observability.py). Requires the Prometheus Operator CRDs in-cluster.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: agentbox
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: agentbox
+    {{- with .Values.monitoring.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: agentbox.recording
+      rules:
+        # The reconciler is the heart of the system; its success ratio is the SLI.
+        - record: agentbox:reconcile_success:ratio_rate5m
+          expr: |
+            1 - (
+              sum(rate(agentbox_reconcile_errors_total[5m]))
+              /
+              clamp_min(sum(rate(agentbox_reconcile_loops_total[5m])), 1)
+            )
+        - record: agentbox:reconcile_success:ratio_rate1h
+          expr: |
+            1 - (
+              sum(rate(agentbox_reconcile_errors_total[1h]))
+              /
+              clamp_min(sum(rate(agentbox_reconcile_loops_total[1h])), 1)
+            )
+
+    - name: agentbox.alerts
+      rules:
+        # Liveness of the control loop: no completed ticks means the reconciler
+        # is wedged (deadlock, lost DB connection, crashloop) even if pods are up.
+        - alert: AgentboxReconcilerStalled
+          expr: sum(rate(agentbox_reconcile_loops_total[5m])) == 0
+          for: 5m
+          labels: {severity: critical}
+          annotations:
+            summary: "AgentBox reconciler is not completing ticks"
+            description: "No reconcile loops have completed in 5m — sessions will not progress."
+
+        - alert: AgentboxHighApiLatency
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(agentbox_api_request_seconds_bucket[5m])) by (le)) > 1
+          for: 10m
+          labels: {severity: warning}
+          annotations:
+            summary: "AgentBox API p99 latency above 1s"
+            description: "p99 request latency has exceeded 1s for 10m."
+
+        - alert: AgentboxSessionFailureRateHigh
+          expr: |
+            sum(rate(agentbox_sessions_finished_total{state="failed"}[15m]))
+            /
+            clamp_min(sum(rate(agentbox_sessions_finished_total[15m])), 1) > 0.5
+          for: 15m
+          labels: {severity: warning}
+          annotations:
+            summary: "More than half of AgentBox sessions are failing"
+            description: "Session failure ratio > 50% over 15m — check executor/RBAC/image."
+
+    - name: agentbox.slo
+      rules:
+        # Multi-window burn-rate alerting (Google SRE model) against the
+        # reconcile-success SLO. Fast burn (page) and slow burn (ticket).
+        - alert: AgentboxReconcileSLOFastBurn
+          expr: |
+            (1 - agentbox:reconcile_success:ratio_rate5m)
+              > (14.4 * (1 - {{ .Values.monitoring.slo.reconcileSuccessTarget }}))
+          for: 2m
+          labels: {severity: critical}
+          annotations:
+            summary: "AgentBox reconcile SLO fast burn"
+            description: "Error budget burning >14.4x — at this rate a 30d budget is gone in ~2 days."
+
+        - alert: AgentboxReconcileSLOSlowBurn
+          expr: |
+            (1 - agentbox:reconcile_success:ratio_rate1h)
+              > (3 * (1 - {{ .Values.monitoring.slo.reconcileSuccessTarget }}))
+          for: 15m
+          labels: {severity: warning}
+          annotations:
+            summary: "AgentBox reconcile SLO slow burn"
+            description: "Error budget burning ~3x over 1h — investigate before it accelerates."
+{{- end }}

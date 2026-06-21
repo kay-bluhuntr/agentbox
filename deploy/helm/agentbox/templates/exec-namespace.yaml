@@ -6,6 +6,9 @@ metadata:
   labels:
     agentbox.io/role: execution
     pod-security.kubernetes.io/enforce: restricted
+  annotations:
+    # Wave -1: the namespace and its guardrails must exist before the control plane.
+    argocd.argoproj.io/sync-wave: "-1"
 ---
 # Default-deny all ingress and egress for workloads. Sandboxed code gets no
 # network unless a policy explicitly grants it (DNS is deliberately excluded too).
@@ -14,6 +17,8 @@ kind: NetworkPolicy
 metadata:
   name: default-deny-all
   namespace: {{ .Values.execNamespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
 spec:
   podSelector: {}
   policyTypes: [Ingress, Egress]
@@ -24,6 +29,8 @@ kind: ResourceQuota
 metadata:
   name: agentbox-exec-quota
   namespace: {{ .Values.execNamespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
 spec:
   hard:
     pods: {{ .Values.execQuota.pods | quote }}
@@ -38,4 +45,6 @@ kind: ServiceAccount
 metadata:
   name: agentbox-runner
   namespace: {{ .Values.execNamespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
 automountServiceAccountToken: false

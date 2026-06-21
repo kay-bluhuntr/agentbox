@@ -28,3 +28,32 @@ execQuota:
   requestsMemory: 20Gi
   limitsCpu: "20"
   limitsMemory: 40Gi
+
+# Observability bootstrap. Off by default: these need the Prometheus Operator
+# CRDs in-cluster, which the kind dev cluster doesn't ship. Enabled per-env
+# (see deploy/envs/prod/values.yaml) where the operator is present.
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}  # e.g. {release: kube-prometheus-stack} to match the operator's selector
+
+monitoring:
+  prometheusRule:
+    enabled: false
+    labels: {}  # must match the operator's ruleSelector
+  slo:
+    # Target success ratio for the reconciler control loop; drives burn-rate alerts.
+    reconcileSuccessTarget: 0.99
+
+# Progressive delivery. Off by default: ships the control plane as a plain
+# Deployment. When enabled, it ships as an Argo Rollouts Rollout with a canary
+# strategy instead (requires the Argo Rollouts controller in-cluster).
+rollout:
+  enabled: false
+  canaryWeight: 20     # initial % of traffic to the new version
+  pauseDuration: 60s   # soak time at each step
+  analysis:
+    prometheusAddress: http://kube-prometheus-stack-prometheus.monitoring:9090
+    maxReconcileErrorRatio: 0.1   # fail the canary above 10% reconcile errors
+    maxApiP99Seconds: 1.0         # fail the canary above 1s p99 API latency
