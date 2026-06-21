@@ -55,8 +55,15 @@ make smoke        # submits a test session and polls for success
 
 ```bash
 make kind-up      # creates a local kind cluster and deploys everything
-make smoke        # runs the smoke test against the cluster
+
+# The API Service is ClusterIP, so forward a local port before smoke-testing:
+kubectl -n agentbox port-forward svc/agentbox 8080:80 &
+make smoke        # runs the smoke test against the forwarded port
 ```
+
+`make smoke` targets `http://localhost:8080` (override with `AGENTBOX_HOST`). In
+the docker-compose path that port is published directly; on kind it's the
+port-forward above.
 
 ## API
 
