@@ -151,29 +151,114 @@ deploy/
   terraform/            # cluster-level infra
 ```
 
-### Platform capabilities
-
 The chart is feature-flagged so the same templates serve a bare kind cluster and a
-fully-instrumented production cluster:
+fully-instrumented production cluster. The CRD-dependent features default **off** in
+the base chart (so the kind dev path stays dependency-free) and are switched **on**
+in [`envs/prod/values.yaml`](deploy/envs/prod/values.yaml).
 
-- **Progressive delivery** (`rollout.enabled`): ships the control plane as an
-  [Argo Rollouts](https://argoproj.github.io/rollouts/) `Rollout` with a canary
-  strategy instead of a `Deployment`. The `AnalysisTemplate` gates promotion on
-  the control plane's *own* health signals — reconcile error ratio and API p99
-  latency — so a regression auto-rolls-back before reaching every replica. Enabled
-  in prod, off in dev (speed over safety there). Stable/canary share one pod spec
-  via [`_helpers.tpl`](deploy/helm/agentbox/templates/_helpers.tpl).
-- **Observability bootstrap** (`metrics.serviceMonitor.enabled`,
-  `monitoring.prometheusRule.enabled`): a `ServiceMonitor` so Prometheus scrapes
-  `/metrics`, plus alerts (reconciler stalled, high API latency, session failure
-  rate) and a Google-SRE multi-window **burn-rate SLO** on reconcile success.
-- **GitOps guardrails**: an ArgoCD `AppProject` fences every Application to this
-  repo and the AgentBox namespaces; `sync-wave` annotations apply the namespace,
-  NetworkPolicy, quota, and RBAC (wave -1) before the workload (wave 0).
+### GitOps with ArgoCD
 
-These need the Prometheus Operator and Argo Rollouts CRDs in-cluster, so they
-default off in the base chart (the kind dev path stays dependency-free) and are
-switched on in [`envs/prod/values.yaml`](deploy/envs/prod/values.yaml).
+Deployment is pull-based: nobody runs `helm` against a real cluster by hand. Git is
+the only deployment interface, and ArgoCD reconciles the cluster to match.
+
+```
+git push ─► CI builds + scans image ─► CI commits image tag to envs/dev/values.yaml
+                                                  │
+                                      ArgoCD detects the change
+                                                  │
+                                   ArgoCD syncs the cluster to Git
+```
+
+- **App-of-apps**: one root Application ([`argocd/root.yaml`](deploy/argocd/root.yaml))
+  points at [`argocd/apps/`](deploy/argocd/apps); adding or changing an environment is
+  a pull request against that directory. Bootstrap a cluster once with:
+  ```bash
+  kubectl apply -f deploy/argocd/root.yaml
+  ```
+- **Environments**: [`apps/dev.yaml`](deploy/argocd/apps/dev.yaml) and
+  [`apps/prod.yaml`](deploy/argocd/apps/prod.yaml) are multi-source Applications — the
+  chart and the per-env `values.yaml` live at different paths of this repo. Both
+  auto-sync; the gate for prod is the **pull request** that changes
+  `envs/prod/values.yaml`, not a manual sync button.
+- **AppProject guardrail** ([`apps/project.yaml`](deploy/argocd/apps/project.yaml)):
+  an RBAC boundary that fences every Application to this repo and the AgentBox
+  namespaces, and whitelists `Namespace` as the only cluster-scoped resource it may
+  create.
+- **Sync waves**: `sync-wave: -1` annotations apply the execution namespace,
+  default-deny `NetworkPolicy`, `ResourceQuota`, and RBAC *before* the control plane
+  (wave 0), so the guardrails always exist before any workload can.
+
+> **Private repo note:** ArgoCD's repo-server needs credentials to read a private
+> repo — register a read-only deploy token (or an `argocd-repo-creds` Secret) or
+> Applications will fail to sync with `authentication required`.
+
+### Observability
+
+The control plane exposes Prometheus metrics at `/metrics`
+([`agentbox/observability.py`](agentbox/observability.py)):
+
+| Metric | Meaning |
+|---|---|
+| `agentbox_sessions_created_total` | sessions accepted by the API |
+| `agentbox_sessions_finished_total{state}` | sessions reaching a terminal state |
+| `agentbox_session_retries_total` | retries scheduled by the reconciler |
+| `agentbox_reconcile_loops_total` / `_errors_total` | control-loop liveness and failures |
+| `agentbox_api_request_seconds` | API latency histogram (by method, route) |
+
+Enabling `metrics.serviceMonitor.enabled` and `monitoring.prometheusRule.enabled`
+ships:
+
+- a **`ServiceMonitor`** so the Prometheus Operator scrapes `/metrics` (label it to
+  match your operator's selector, e.g. `release: kube-prometheus-stack`);
+- a **`PrometheusRule`** with operational alerts (`AgentboxReconcilerStalled`,
+  `AgentboxHighApiLatency`, `AgentboxSessionFailureRateHigh`) plus recording rules
+  for the reconcile-success SLI and a Google-SRE **multi-window burn-rate SLO**
+  (fast-burn pages, slow-burn tickets) against `monitoring.slo.reconcileSuccessTarget`.
+
+### Progressive delivery (canary)
+
+With `rollout.enabled`, the control plane ships as an
+[Argo Rollouts](https://argoproj.github.io/rollouts/) `Rollout` instead of a
+`Deployment`. A new version takes `rollout.canaryWeight`% of traffic, then an
+`AnalysisTemplate` queries Prometheus for the control plane's *own* health — reconcile
+error ratio and API p99 latency — and **auto-rolls-back** if either regresses before
+the change reaches every replica. Stable and canary share one pod spec via
+[`_helpers.tpl`](deploy/helm/agentbox/templates/_helpers.tpl). Enabled in prod, off in
+dev (speed over safety there).
+
+### Running the full platform stack on kind
+
+`make kind-up` deploys the dependency-free base chart. To exercise GitOps,
+observability, and canary locally, install the controllers and deploy with the flags
+on:
+
+```bash
+# 1. Controllers (CRDs the features depend on)
+kubectl create namespace argocd && \
+  kubectl apply -n argocd --server-side -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+kubectl create namespace argo-rollouts && \
+  kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts && helm repo update
+helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+  -n monitoring --create-namespace --set alertmanager.enabled=false
+
+# 2. Deploy with the platform flags on (local image, Prometheus-Operator selector label)
+helm upgrade --install agentbox deploy/helm/agentbox -n agentbox \
+  --set image.repository=agentbox --set image.tag=dev --set image.pullPolicy=IfNotPresent \
+  --set rollout.enabled=true \
+  --set metrics.serviceMonitor.enabled=true \
+  --set metrics.serviceMonitor.labels.release=kube-prometheus-stack \
+  --set monitoring.prometheusRule.enabled=true \
+  --set monitoring.prometheusRule.labels.release=kube-prometheus-stack
+```
+
+Then explore:
+
+```bash
+kubectl -n agentbox get rollout,servicemonitor,prometheusrule,analysistemplate
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090  # targets, rules, graph
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80       # admin / prom-operator
+```
 
 ## Development
 
