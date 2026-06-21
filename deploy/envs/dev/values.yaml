@@ -7,7 +7,7 @@
 
 image:
   repository: ghcr.io/kay-bluhuntr/agentbox
-  tag: "53435a6e5e31ef3b75a8d5eef24768817d05a0c5"  # managed by CI — do not edit by hand
+  tag: "7f4dc213ed2ef0be3165601494d75b5e902ed460"  # managed by CI — do not edit by hand
 
 replicaCount: 1  # dev: one replica is plenty; leader election still exercised
 
