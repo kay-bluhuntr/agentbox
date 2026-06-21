@@ -14,14 +14,14 @@ metadata:
 spec:
   project: agentbox
   sources:
-    - repoURL: https://github.com/kayode-odewale/agentbox
+    - repoURL: https://github.com/kay-bluhuntr/agentbox
       targetRevision: main
       path: deploy/helm/agentbox
       helm:
         releaseName: agentbox
         valueFiles:
           - $values/deploy/envs/prod/values.yaml
-    - repoURL: https://github.com/kayode-odewale/agentbox
+    - repoURL: https://github.com/kay-bluhuntr/agentbox
       targetRevision: main
       ref: values
   destination:

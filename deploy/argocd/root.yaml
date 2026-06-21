@@ -14,7 +14,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/kayode-odewale/agentbox
+    repoURL: https://github.com/kay-bluhuntr/agentbox
     targetRevision: main
     path: deploy/argocd/apps
     directory:

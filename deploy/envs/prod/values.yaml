@@ -6,7 +6,7 @@
 # applies it on merge; nobody runs helm against prod by hand.
 
 image:
-  repository: ghcr.io/kayode-odewale/agentbox
+  repository: ghcr.io/kay-bluhuntr/agentbox
   tag: "initial"  # promoted from dev via PR — see scripts/promote.sh
 
 replicaCount: 2  # HA control plane; reconciler leader-elects via Postgres

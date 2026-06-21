@@ -17,7 +17,7 @@ spec:
   description: AgentBox control plane and sandboxed execution
   # Only this repo may be a source.
   sourceRepos:
-    - https://github.com/kayode-odewale/agentbox
+    - https://github.com/kay-bluhuntr/agentbox
   # Only these namespaces may be deployment targets.
   destinations:
     - server: https://kubernetes.default.svc
