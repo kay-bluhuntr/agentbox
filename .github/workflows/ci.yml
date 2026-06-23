@@ -58,8 +58,15 @@ jobs:
   build:
     needs: [test, security]
     runs-on: ubuntu-latest
+    outputs:
+      short_sha: ${{ steps.vars.outputs.short_sha }}   # consumed by deploy-dev
     steps:
       - uses: actions/checkout@v5
+      - name: Short commit SHA
+        id: vars
+        # Tag images with the 7-char short SHA (matches `git rev-parse --short`
+        # and the promote/commit conventions) instead of the full 40-char SHA.
+        run: echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@v3   # enables emulated cross-arch (arm64) builds
       - uses: docker/setup-buildx-action@v3
       - name: Build image (amd64, loaded for scanning)
@@ -70,12 +77,12 @@ jobs:
         with:
           context: .
           load: true
-          tags: agentbox:${{ github.sha }}
+          tags: agentbox:${{ steps.vars.outputs.short_sha }}
       # Scan the built image for CVEs before it can be pushed
       - name: Scan image (Trivy)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: agentbox:${{ github.sha }}
+          image-ref: agentbox:${{ steps.vars.outputs.short_sha }}
           severity: HIGH,CRITICAL
           exit-code: "1"
           trivyignores: .trivyignore
@@ -96,7 +103,7 @@ jobs:
           # arm64 nodes (e.g. local kind on Apple Silicon).
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.short_sha }}
             ghcr.io/${{ github.repository }}:latest
 
   # GitOps handoff: deployment happens by committing the new image tag to the
@@ -120,12 +127,14 @@ jobs:
           repository: kay-bluhuntr/agentbox-gitops
           token: ${{ secrets.GITOPS_TOKEN }}
       - name: Pin new image tag in dev values
+        env:
+          SHORT_SHA: ${{ needs.build.outputs.short_sha }}   # same tag the image was pushed with
         run: |
-          sed -i -E "s|^(\s+tag:).*# managed by CI.*|\1 \"${GITHUB_SHA}\"  # managed by CI — do not edit by hand|" \
+          sed -i -E "s|^([[:space:]]+tag:).*# managed by CI.*|\1 \"${SHORT_SHA}\"  # managed by CI — do not edit by hand|" \
             envs/dev/values.yaml
           git diff --quiet && { echo "tag unchanged, nothing to do"; exit 0; }
           git config user.name "agentbox-ci"
           git config user.email "agentbox-ci@users.noreply.github.com"
           git add envs/dev/values.yaml
-          git commit -m "deploy: ${GITHUB_SHA::7} to dev"
+          git commit -m "deploy: ${SHORT_SHA} to dev"
           git push
