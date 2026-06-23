@@ -64,9 +64,9 @@ jobs:
       - uses: actions/checkout@v5
       - name: Short commit SHA
         id: vars
-        # Tag images with the 7-char short SHA (matches `git rev-parse --short`
+        # Tag images with the 10-char short SHA (matches `git rev-parse --short`
         # and the promote/commit conventions) instead of the full 40-char SHA.
-        run: echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        run: echo "short_sha=${GITHUB_SHA::10}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@v3   # enables emulated cross-arch (arm64) builds
       - uses: docker/setup-buildx-action@v3
       - name: Build image (amd64, loaded for scanning)
