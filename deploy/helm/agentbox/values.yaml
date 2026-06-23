@@ -30,8 +30,8 @@ execQuota:
   limitsMemory: 40Gi
 
 # Observability bootstrap. Off by default: these need the Prometheus Operator
-# CRDs in-cluster, which the kind dev cluster doesn't ship. Enabled per-env
-# (see deploy/envs/prod/values.yaml) where the operator is present.
+# CRDs in-cluster, which the kind dev cluster doesn't ship. Enabled per-env in
+# the agentbox-gitops repo (envs/prod/values.yaml) where the operator is present.
 metrics:
   serviceMonitor:
     enabled: false

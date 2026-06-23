@@ -92,27 +92,33 @@ jobs:
             ghcr.io/${{ github.repository }}:${{ github.sha }}
             ghcr.io/${{ github.repository }}:latest
 
-  # GitOps handoff: deployment happens by committing the new image tag to
-  # the dev environment's values file. ArgoCD (deploy/argocd/apps/dev.yaml)
-  # notices the Git change and converges the cluster — CI never touches
-  # the cluster and holds no kubeconfig. Promotion to prod is a PR
-  # (scripts/promote.sh), reviewed in Git like any other change.
+  # GitOps handoff: deployment happens by committing the new image tag to the
+  # dev values file in the *separate* agentbox-gitops repo — never this repo.
+  # ArgoCD (deploy/argocd/apps/dev.yaml) reads those values and converges the
+  # cluster; CI never touches the cluster and holds no kubeconfig. Because the
+  # bump lands in another repo, this repo's main only ever changes by human PR
+  # (no more bot commits, no [skip ci] dance). Promotion to prod is a PR against
+  # agentbox-gitops (scripts/promote.sh).
+  #
+  # Requires a repo secret GITOPS_TOKEN: a token with write access to
+  # kay-bluhuntr/agentbox-gitops (fine-grained PAT or a deploy key).
   deploy-dev:
     needs: build
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - uses: actions/checkout@v5
+      - name: Check out the GitOps repo
+        uses: actions/checkout@v5
+        with:
+          repository: kay-bluhuntr/agentbox-gitops
+          token: ${{ secrets.GITOPS_TOKEN }}
       - name: Pin new image tag in dev values
         run: |
           sed -i -E "s|^(\s+tag:).*# managed by CI.*|\1 \"${GITHUB_SHA}\"  # managed by CI — do not edit by hand|" \
-            deploy/envs/dev/values.yaml
+            envs/dev/values.yaml
           git diff --quiet && { echo "tag unchanged, nothing to do"; exit 0; }
           git config user.name "agentbox-ci"
           git config user.email "agentbox-ci@users.noreply.github.com"
-          git add deploy/envs/dev/values.yaml
-          # [skip ci] stops the bump commit from triggering this workflow again
-          git commit -m "ci: deploy ${GITHUB_SHA::7} to dev [skip ci]"
+          git add envs/dev/values.yaml
+          git commit -m "deploy: ${GITHUB_SHA::7} to dev"
           git push

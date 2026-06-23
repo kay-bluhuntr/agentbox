@@ -1,8 +1,8 @@
-# Dev environment. Multi-source Application (ArgoCD 2.6+): the chart and the
-# environment values live in different paths of the same repo, and `ref`
-# lets valueFiles reach outside the chart directory. Fully automated sync:
-# every image tag CI commits to deploy/envs/dev lands here within one
-# reconcile interval.
+# Dev environment. Multi-source Application (ArgoCD 2.6+): the Helm *chart* comes
+# from this app repo, while the environment *values* come from the separate
+# agentbox-gitops repo (the `$values` ref). CI writes the image tag into that
+# repo, so this app repo never receives bot commits. Fully automated sync: a tag
+# bump in agentbox-gitops lands here within one reconcile interval.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -19,8 +19,8 @@ spec:
       helm:
         releaseName: agentbox
         valueFiles:
-          - $values/deploy/envs/dev/values.yaml
-    - repoURL: https://github.com/kay-bluhuntr/agentbox
+          - $values/envs/dev/values.yaml
+    - repoURL: https://github.com/kay-bluhuntr/agentbox-gitops
       targetRevision: main
       ref: values
   destination:
