@@ -42,28 +42,62 @@ Agent  ──POST /v1/sessions──►  AgentBox API  ──(async)──►  K
 | Duplicate driving | Postgres advisory lock ensures exactly one reconciler runs across replicas |
 | Flaky infra | Per-session retry budget with jitter backoff, tracked in Postgres |
 
+## Two repositories
+
+Deployment state is split across two repos so the application repo's `main` never receives automated commits:
+
+| Repo | Holds | Changes via |
+|---|---|---|
+| **`agentbox`** (this repo) | application code, Dockerfile, Helm chart, ArgoCD manifests, Terraform — *the what* | human PRs only |
+| **[`agentbox-gitops`](https://github.com/kay-bluhuntr/agentbox-gitops)** | per-environment values + pinned image tags (`envs/dev`, `envs/prod`) — *which version runs where* | CI (dev tag) and promotion PRs (prod tag) |
+
+CI builds the image and writes the new tag into `agentbox-gitops`, not here — so `git push` against this repo is never rejected by a CI bot commit. See [CI/CD pipeline](#cicd-pipeline) and [The GitOps platform](#the-gitops-platform).
+
+---
+
+## Prerequisites
+
+| Path | Needs |
+|---|---|
+| Local dev | Docker (Compose v2) |
+| kind cluster | Docker, [`kind`](https://kind.sigs.k8s.io/), `kubectl`, [`helm`](https://helm.sh/) v3 |
+| Full GitOps platform | the above + [`gh`](https://cli.github.com/) (GitHub CLI), a GitHub account that can create repos/secrets |
+| Working on the code | Python 3.11+ |
+
+---
+
 ## Quickstart
 
-**Local dev (no cluster needed):**
+There are three ways to run AgentBox, in increasing order of completeness. Pick one.
+
+### A. Local dev — no cluster (fastest)
+
+Runs the API + Postgres via docker-compose with the in-process "local" executor (workloads run as subprocesses, not Jobs). Good for working on the API/reconciler.
 
 ```bash
-make dev          # starts the API + Postgres via docker-compose
-make smoke        # submits a test session and polls for success
+make dev      # builds + starts API + Postgres (creates .env from .env.example on first run)
+make smoke    # submits a test session and polls it to success
 ```
 
-**Full Kubernetes setup:**
+`make smoke` targets `http://localhost:8080` (override with `AGENTBOX_HOST`); docker-compose publishes that port directly.
+
+### B. Single-node kind — real Kubernetes, no GitOps
+
+Spins up a kind cluster and deploys the **base chart** (plain `Deployment`, no ArgoCD/Prometheus/canary). This is the dependency-free path — nothing beyond kind is required.
 
 ```bash
-make kind-up      # creates a local kind cluster and deploys everything
-
-# The API Service is ClusterIP, so forward a local port before smoke-testing:
-kubectl -n agentbox port-forward svc/agentbox 8080:80 &
-make smoke        # runs the smoke test against the forwarded port
+make kind-up                                              # create cluster, build+load image, helm install
+kubectl -n agentbox port-forward svc/agentbox 8080:80 &   # Service is ClusterIP
+make smoke
 ```
 
-`make smoke` targets `http://localhost:8080` (override with `AGENTBOX_HOST`). In
-the docker-compose path that port is published directly; on kind it's the
-port-forward above.
+> `make kind-up` builds the image locally and `kind load`s it, deploying with `image.pullPolicy=IfNotPresent` into the `agentbox` namespace. It also seeds an in-cluster Postgres + secret. **Don't** also run the full GitOps path (below) into the same `agentbox` namespace without first `helm uninstall agentbox -n agentbox` — two controllers owning the same release will fight.
+
+### C. Full GitOps platform on kind
+
+The real thing: ArgoCD pulls the chart + env values from Git and reconciles dev and prod, with Prometheus scraping and canary rollouts. This is the [setup guide below](#full-setup-from-scratch).
+
+---
 
 ## API
 
@@ -80,35 +114,16 @@ curl -X POST http://localhost:8080/v1/sessions \
   }'
 ```
 
-Response:
 ```json
-{
-  "id": "a3f1c2d4-...",
-  "state": "pending",
-  "image": "python:3.12-slim",
-  "command": ["python", "-c", "print(\"hello from AgentBox\")"],
-  "attempt": 0,
-  "created_at": "2026-06-12T10:00:00Z",
-  ...
-}
+{ "id": "a3f1c2d4-...", "state": "pending", "image": "python:3.12-slim", "attempt": 0, ... }
 ```
 
-### Poll for result
+### Poll / logs / cancel
 
 ```bash
-curl http://localhost:8080/v1/sessions/a3f1c2d4-...
-```
-
-### Get logs
-
-```bash
-curl http://localhost:8080/v1/sessions/a3f1c2d4-.../logs
-```
-
-### Cancel
-
-```bash
-curl -X DELETE http://localhost:8080/v1/sessions/a3f1c2d4-...
+curl http://localhost:8080/v1/sessions/<id>
+curl http://localhost:8080/v1/sessions/<id>/logs
+curl -X DELETE http://localhost:8080/v1/sessions/<id>
 ```
 
 ## Session lifecycle
@@ -127,7 +142,7 @@ All settings are environment variables prefixed `AGENTBOX_`:
 
 | Variable | Default | Description |
 |---|---|---|
-| `AGENTBOX_DATABASE_URL` | `postgresql+psycopg://...` | Postgres connection string |
+| `AGENTBOX_DATABASE_URL` | `postgresql+psycopg://...` | Postgres connection string (local-dev default; real deploys inject from a Secret) |
 | `AGENTBOX_EXECUTOR` | `kubernetes` | `kubernetes` or `local` (dev mode) |
 | `AGENTBOX_EXEC_NAMESPACE` | `agentbox-exec` | Kubernetes namespace for workload Jobs |
 | `AGENTBOX_DEFAULT_CPU_LIMIT` | `500m` | CPU cap per workload |
@@ -137,80 +152,193 @@ All settings are environment variables prefixed `AGENTBOX_`:
 | `AGENTBOX_MAX_RETRIES_CEILING` | `5` | Max retries a caller can request |
 | `AGENTBOX_RECONCILE_INTERVAL_SECONDS` | `2.0` | How often the reconciler polls |
 
-## Deployment
+---
 
-Deployment state is split across two repos:
-
-- **This repo** holds the application *and* its Helm chart + ArgoCD manifests — the
-  *what*.
-- **[`agentbox-gitops`](https://github.com/kay-bluhuntr/agentbox-gitops)** holds the
-  per-env values (`envs/dev`, `envs/prod`) — *which version runs where*. CI writes
-  image tags there, so **this repo's `main` only ever changes by human PR** (no bot
-  commits, so your `git push` is never rejected by a CI commit).
+## The GitOps platform
 
 ```
 deploy/
   helm/agentbox/        # Helm chart (Deployment/Rollout, RBAC, NetworkPolicy,
                         #   ResourceQuota, ServiceMonitor, PrometheusRule)
   argocd/               # App-of-apps root, AppProject, dev/prod Applications
-  terraform/            # cluster-level infra
+  terraform/            # cluster-level infra (VPC + EKS + RDS via community modules)
 
 agentbox-gitops/        # SEPARATE repo — deployment state
   envs/dev/values.yaml  # fast iteration: plain Deployment, no canary
   envs/prod/values.yaml # full pattern: ServiceMonitor + alerts + canary rollout
 ```
 
-The chart is feature-flagged so the same templates serve a bare kind cluster and a
-fully-instrumented production cluster. The CRD-dependent features default **off** in
-the base chart (so the kind dev path stays dependency-free) and are switched **on**
-in `agentbox-gitops`'s `envs/prod/values.yaml`.
+The chart is **feature-flagged**: the same templates serve a bare kind cluster and a fully-instrumented production cluster. CRD-dependent features (`rollout.enabled`, `metrics.serviceMonitor.enabled`, `monitoring.prometheusRule.enabled`) default **off** in the base chart and are switched **on** in `agentbox-gitops`'s `envs/prod/values.yaml`.
 
-### GitOps with ArgoCD
+### How sync works
 
-Deployment is pull-based: nobody runs `helm` against a real cluster by hand. Git is
-the only deployment interface, and ArgoCD reconciles the cluster to match.
+Pull-based — nobody runs `helm`/`kubectl` against a cluster by hand. ArgoCD reconciles the cluster to Git:
 
 ```
-git push (app repo) ─► CI builds + scans image ─► CI writes image tag to
-                                                  agentbox-gitops envs/dev/values.yaml
-                                                          │
-                                              ArgoCD detects the change
-                                                          │
-                                       ArgoCD syncs the cluster to Git
+git push (app repo) ─► CI builds + scans + pushes image ─► CI writes the image tag
+                                                           to agentbox-gitops envs/dev
+                                                                    │
+                                                        ArgoCD detects the change
+                                                                    │
+                                                 ArgoCD syncs the cluster to Git
 ```
 
-- **App-of-apps**: one root Application ([`argocd/root.yaml`](deploy/argocd/root.yaml))
-  points at [`argocd/apps/`](deploy/argocd/apps); adding or changing an environment is
-  a pull request against that directory. Bootstrap a cluster once with:
-  ```bash
-  kubectl apply -f deploy/argocd/root.yaml
-  ```
-- **Environments**: [`apps/dev.yaml`](deploy/argocd/apps/dev.yaml) and
-  [`apps/prod.yaml`](deploy/argocd/apps/prod.yaml) are multi-source Applications — the
-  chart comes from this repo, the per-env `values.yaml` from the `agentbox-gitops`
-  repo (the `$values` ref). Both auto-sync; the gate for prod is the **pull request**
-  against `agentbox-gitops` (run [`scripts/promote.sh`](scripts/promote.sh)), not a
-  manual sync button.
-- **AppProject guardrail** ([`apps/project.yaml`](deploy/argocd/apps/project.yaml)):
-  an RBAC boundary that fences every Application to this repo and the AgentBox
-  namespaces, and whitelists `Namespace` as the only cluster-scoped resource it may
-  create.
-- **Sync waves**: `sync-wave: -1` annotations apply the execution namespace,
-  default-deny `NetworkPolicy`, `ResourceQuota`, and RBAC *before* the control plane
-  (wave 0), so the guardrails always exist before any workload can.
+- **App-of-apps** — one root Application ([`argocd/root.yaml`](deploy/argocd/root.yaml)) points at [`argocd/apps/`](deploy/argocd/apps); adding/changing an environment is a PR against that directory.
+- **Environments** — [`apps/dev.yaml`](deploy/argocd/apps/dev.yaml) and [`apps/prod.yaml`](deploy/argocd/apps/prod.yaml) are multi-source Applications: the **chart** comes from this repo, the per-env **values** from `agentbox-gitops` (the `$values` ref). Both auto-sync.
+- **AppProject guardrail** ([`apps/project.yaml`](deploy/argocd/apps/project.yaml)) — fences every Application to the two AgentBox repos and the AgentBox namespaces, and whitelists `Namespace` as the only cluster-scoped resource it may create.
+- **Sync waves** — `sync-wave: -1` applies the execution namespace, default-deny `NetworkPolicy`, `ResourceQuota`, and RBAC *before* the control plane (wave 0).
 
-> **Credentials this split needs:**
-> - **ArgoCD** must be able to read both private repos (chart + `agentbox-gitops`) —
->   register read-only repo creds (`argocd-repo-creds` Secret), or Applications fail
->   to sync with `authentication required`.
-> - **CI** needs a `GITOPS_TOKEN` repo secret with write access to `agentbox-gitops`
->   so the `deploy-dev` job can push the image-tag bump there (a fine-grained PAT or
->   a deploy key).
+### Full setup from scratch
+
+This reproduces, as repeatable steps, everything needed to bring up the full platform on a fresh kind cluster. Replace `kay-bluhuntr` with your GitHub org/user throughout.
+
+> **One-time GitHub setup.** The manifests reference `github.com/kay-bluhuntr/agentbox` and `…/agentbox-gitops`. If you forked/renamed, update the `repoURL`s in `deploy/argocd/**` and `image.repository` in the chart/values, and the `agentbox-gitops` URLs in `.github/workflows/ci.yml` and `scripts/promote.sh`.
+
+**1. Create the cluster and the base deployment**
+
+```bash
+make kind-up   # cluster + locally-built image + base chart in the `agentbox` namespace
+```
+
+If you intend to let ArgoCD own the `agentbox` namespace for prod, remove the helm-managed release first so the two don't conflict:
+
+```bash
+helm uninstall agentbox -n agentbox   # leaves the kubectl-applied Postgres + secret in place
+```
+
+**2. Install the controllers**
+
+```bash
+# ArgoCD (server-side apply: the ApplicationSet CRD is too large for client-side apply)
+kubectl create namespace argocd
+kubectl apply -n argocd --server-side -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# Argo Rollouts (canary controller + Rollout/AnalysisTemplate CRDs)
+kubectl create namespace argo-rollouts
+kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+
+# Prometheus Operator + Prometheus + Grafana (provides ServiceMonitor/PrometheusRule CRDs)
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts && helm repo update
+helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+  -n monitoring --create-namespace --set alertmanager.enabled=false --wait
+```
+
+**3. Make the image pullable**
+
+CI pushes a **multi-arch** image (`linux/amd64,linux/arm64`) to `ghcr.io/<owner>/agentbox`, so it runs on both real amd64 clusters and arm64 kind (Apple Silicon). GHCR packages are **private by default**, so the cluster needs pull access. Pick one:
+
+- **Public package** (simplest for a demo): GitHub → your avatar → **Packages → agentbox → Package settings → Change visibility → Public**. Anonymous pulls then work everywhere.
+- **Private + imagePullSecret**: create a `dockerconfigjson` Secret from a PAT with `read:packages` and reference it from the workload's service account.
+
+**4. Give ArgoCD read access to both private Git repos**
+
+ArgoCD's repo-server clones the chart (this repo) and the values (`agentbox-gitops`). Register a credential **template keyed to your org prefix** — this matches every repo under the org regardless of a trailing `.git`, which avoids a subtle gotcha where an exact-URL credential registered with `.git` won't match an Application `repoURL` written without it:
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: <owner>-repo-creds
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repo-creds   # credential TEMPLATE, matched by URL prefix
+stringData:
+  type: git
+  url: https://github.com/<owner>
+  username: <owner>
+  password: <read-only PAT with repo:read>
+EOF
+```
+
+**5. Give CI write access to the GitOps repo**
+
+The `deploy-dev` CI job pushes the image-tag bump to `agentbox-gitops`, which the workflow's built-in `GITHUB_TOKEN` can't reach (different repo). Add a `GITOPS_TOKEN` secret to *this* repo — a fine-grained PAT with **Contents: write** on `agentbox-gitops`:
+
+```bash
+gh secret set GITOPS_TOKEN --repo <owner>/agentbox
+```
+
+**6. Bootstrap ArgoCD**
+
+```bash
+kubectl apply -f deploy/argocd/root.yaml   # app-of-apps → creates AppProject + dev/prod Applications
+```
+
+**7. Seed a database per ArgoCD-managed namespace**
+
+The chart deploys only the control plane; it expects a Postgres reachable via the `agentbox-db` secret it reads. (Production would point this at managed Postgres — see [`deploy/terraform`](deploy/terraform).) For kind, seed a throwaway Postgres + secret in each target namespace (`agentbox-dev` for dev, `agentbox` for prod):
+
+```bash
+seed_db() {  # usage: seed_db <namespace>
+  ns="$1"; pw="$(openssl rand -hex 16)"
+  kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n "$ns" apply -f - <<YAML
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: postgres}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: postgres}}
+  template:
+    metadata: {labels: {app: postgres}}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - {name: POSTGRES_USER, value: agentbox}
+            - {name: POSTGRES_PASSWORD, value: "$pw"}
+            - {name: POSTGRES_DB, value: agentbox}
+          ports: [{containerPort: 5432}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: postgres}
+spec: {selector: {app: postgres}, ports: [{port: 5432}]}
+YAML
+  kubectl -n "$ns" create secret generic agentbox-db \
+    --from-literal=database-url="postgresql+psycopg://agentbox:${pw}@postgres.${ns}.svc:5432/agentbox" \
+    --from-literal=postgres-password="$pw" \
+    --dry-run=client -o yaml | kubectl apply -f -
+}
+
+seed_db agentbox-dev
+seed_db agentbox        # only if running prod here
+```
+
+**8. Verify dev is green**
+
+```bash
+kubectl -n argocd get applications        # agentbox-dev should reach Synced / Healthy
+kubectl -n agentbox-dev get pods          # control-plane pod + postgres Running
+kubectl -n agentbox-dev port-forward svc/agentbox 8080:80 &
+make smoke
+```
+
+`agentbox-prod` will sit **OutOfSync** until you promote (its tag is `initial`, which was never built) — that's expected.
+
+### Deploying to prod (promotion)
+
+You never deploy to prod by hand. You **promote**: copy dev's current tag into `agentbox-gitops/envs/prod/values.yaml` via a PR, and ArgoCD canary-rolls it out on merge.
+
+```bash
+./scripts/promote.sh
+# → opens a PR on agentbox-gitops (prod tag: initial → <dev tag>)
+# → review + merge the PR
+# → ArgoCD canary-deploys prod into the `agentbox` namespace
+```
+
+The first prod rollout goes straight to 100% (no prior version to canary against); subsequent promotions run the canary steps + analysis. Watch it:
+
+```bash
+kubectl -n argocd get app agentbox-prod -o jsonpath='{.status.sync.status}/{.status.health.status}{"\n"}'
+kubectl argo rollouts get rollout agentbox -n agentbox   # if the kubectl-argo-rollouts plugin is installed
+```
 
 ### Observability
 
-The control plane exposes Prometheus metrics at `/metrics`
-([`agentbox/observability.py`](agentbox/observability.py)):
+The control plane exposes Prometheus metrics at `/metrics` ([`agentbox/observability.py`](agentbox/observability.py)):
 
 | Metric | Meaning |
 |---|---|
@@ -220,77 +348,71 @@ The control plane exposes Prometheus metrics at `/metrics`
 | `agentbox_reconcile_loops_total` / `_errors_total` | control-loop liveness and failures |
 | `agentbox_api_request_seconds` | API latency histogram (by method, route) |
 
-Enabling `metrics.serviceMonitor.enabled` and `monitoring.prometheusRule.enabled`
-ships:
-
-- a **`ServiceMonitor`** so the Prometheus Operator scrapes `/metrics` (label it to
-  match your operator's selector, e.g. `release: kube-prometheus-stack`);
-- a **`PrometheusRule`** with operational alerts (`AgentboxReconcilerStalled`,
-  `AgentboxHighApiLatency`, `AgentboxSessionFailureRateHigh`) plus recording rules
-  for the reconcile-success SLI and a Google-SRE **multi-window burn-rate SLO**
-  (fast-burn pages, slow-burn tickets) against `monitoring.slo.reconcileSuccessTarget`.
+With the observability flags on, the chart ships a **`ServiceMonitor`** (scrape `/metrics`) and a **`PrometheusRule`** with operational alerts (`AgentboxReconcilerStalled`, `AgentboxHighApiLatency`, `AgentboxSessionFailureRateHigh`) plus recording rules for the reconcile-success SLI and a Google-SRE **multi-window burn-rate SLO**. Label them to match your operator's selector (kube-prometheus-stack defaults to `release: kube-prometheus-stack`).
 
 ### Progressive delivery (canary)
 
-With `rollout.enabled`, the control plane ships as an
-[Argo Rollouts](https://argoproj.github.io/rollouts/) `Rollout` instead of a
-`Deployment`. A new version takes `rollout.canaryWeight`% of traffic, then an
-`AnalysisTemplate` queries Prometheus for the control plane's *own* health — reconcile
-error ratio and API p99 latency — and **auto-rolls-back** if either regresses before
-the change reaches every replica. Stable and canary share one pod spec via
-[`_helpers.tpl`](deploy/helm/agentbox/templates/_helpers.tpl). Enabled in prod, off in
-dev (speed over safety there).
+With `rollout.enabled`, the control plane ships as an [Argo Rollouts](https://argoproj.github.io/rollouts/) `Rollout` instead of a `Deployment`. A new version takes `rollout.canaryWeight`% of traffic, then an `AnalysisTemplate` queries Prometheus for the control plane's *own* health — reconcile error ratio and API p99 latency — and **auto-rolls-back** if either regresses. Stable and canary share one pod spec via [`_helpers.tpl`](deploy/helm/agentbox/templates/_helpers.tpl). On in prod, off in dev.
 
-### Running the full platform stack on kind
-
-`make kind-up` deploys the dependency-free base chart. To exercise GitOps,
-observability, and canary locally, install the controllers and deploy with the flags
-on:
+### Accessing the dashboards
 
 ```bash
-# 1. Controllers (CRDs the features depend on)
-kubectl create namespace argocd && \
-  kubectl apply -n argocd --server-side -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-kubectl create namespace argo-rollouts && \
-  kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts && helm repo update
-helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
-  -n monitoring --create-namespace --set alertmanager.enabled=false
+# ArgoCD UI — https://localhost:8081 (accept the self-signed cert)
+kubectl -n argocd port-forward svc/argocd-server 8081:443
+#   user: admin
+#   pass: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo
 
-# 2. Deploy with the platform flags on (local image, Prometheus-Operator selector label)
-helm upgrade --install agentbox deploy/helm/agentbox -n agentbox \
-  --set image.repository=agentbox --set image.tag=dev --set image.pullPolicy=IfNotPresent \
-  --set rollout.enabled=true \
-  --set metrics.serviceMonitor.enabled=true \
-  --set metrics.serviceMonitor.labels.release=kube-prometheus-stack \
-  --set monitoring.prometheusRule.enabled=true \
-  --set monitoring.prometheusRule.labels.release=kube-prometheus-stack
+# Prometheus — targets, rules, graph
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090
+
+# Grafana — admin / prom-operator
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
 ```
 
-Then explore:
+---
 
-```bash
-kubectl -n agentbox get rollout,servicemonitor,prometheusrule,analysistemplate
-kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090  # targets, rules, graph
-kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80       # admin / prom-operator
-```
+## CI/CD pipeline
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push/PR:
+
+1. **test** — lint (ruff) + the suite on SQLite *and* a real Postgres service container.
+2. **security** — Checkov scans `deploy/` (Terraform + K8s manifests). [`.trivyignore`](.trivyignore) documents accepted base-image CVEs.
+3. **build** (main only) — builds the image, scans it with **Trivy** (HIGH/CRITICAL fail the build), then pushes a **multi-arch** (`amd64`+`arm64`) image to GHCR tagged with the **short commit SHA** and `:latest`.
+4. **deploy-dev** (main only) — checks out `agentbox-gitops` using `GITOPS_TOKEN` and pins the new short-SHA tag into `envs/dev/values.yaml`. ArgoCD takes it from there. **No commit ever lands on this repo's `main`.**
+
+Promotion to prod is a separate, human-reviewed PR against `agentbox-gitops` (`scripts/promote.sh`).
+
+---
+
+## Troubleshooting
+
+Issues you're likely to hit on a fresh cluster (all encountered and resolved during bring-up):
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `kubectl` commands fail / connection refused | Wrong context (e.g. `minikube`) | `kubectl config use-context kind-agentbox` |
+| ArgoCD install: `metadata.annotations: Too long` | ApplicationSet CRD too big for client-side apply | install with `kubectl apply --server-side` (add `--force-conflicts` if re-applying) |
+| App stuck `Unknown` / `ComparisonError: authentication required: Repository not found` | ArgoCD can't read the private repo, or the repo credential URL has a `.git` the Application `repoURL` lacks | register an org-prefix `repo-creds` template (step 4) so matching ignores the `.git` suffix |
+| Pod `ImagePullBackOff` → `401 Unauthorized` from ghcr.io | GHCR package is private with no pull creds | make the package public, or add an `imagePullSecret` (step 3) |
+| Pod `ErrImagePull` → `no match for platform in manifest` | image is single-arch (amd64) but the node is arm64 (Apple Silicon kind) | ensure CI built multi-arch (it does); for a local image use `docker buildx --platform` or `kind load` an arm64 build |
+| Sync stuck retrying → `namespaces "agentbox-exec" not found` | a sync deleted the exec namespace mid-flight; RBAC reconcile races ahead of namespace creation | `kubectl create namespace agentbox-exec` to unblock, then let the sync finish |
+| Session submit fails with `(401) Unauthorized` from the K8s API | controller pods hold a stale token after their ServiceAccount was deleted+recreated | restart the pods: `kubectl -n <ns> delete pod -l app.kubernetes.io/name=agentbox` |
+| `make kind-up` pod can't pull the GHCR `:latest`/SHA tag | base chart defaults to `pullPolicy: Always` | `kind-up` already overrides to `IfNotPresent` for the locally-loaded image; for ArgoCD dev, `envs/dev/values.yaml` sets `IfNotPresent` |
+| Two `agentbox` controllers fighting in one namespace | a manual `helm install` and the ArgoCD app both own the release | `helm uninstall agentbox -n <ns>`, then let ArgoCD self-heal |
+| `git push` to this repo rejected (`fetch first`) repeatedly | a CI bot used to commit to `main` | resolved by the two-repo split; otherwise `git pull --rebase` (this repo sets `pull.rebase=true`) |
+
+---
 
 ## Development
 
-The project requires Python 3.11+. If your system default is older, create a venv explicitly:
+Requires Python 3.11+. If your system default is older, create a venv explicitly:
 
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-```
 
-Then:
-
-```bash
-make test       # run the test suite
+make test       # run the test suite (SQLite + stub executor — no cluster needed)
 make lint       # ruff check
 make typecheck  # mypy
 ```
-
-Tests use SQLite + a stub executor so no cluster is required.
