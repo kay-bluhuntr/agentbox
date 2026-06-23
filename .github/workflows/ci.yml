@@ -60,8 +60,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: docker/setup-qemu-action@v3   # enables emulated cross-arch (arm64) builds
       - uses: docker/setup-buildx-action@v3
-      - name: Build image
+      - name: Build image (amd64, loaded for scanning)
+        # Single-arch load for Trivy: `load: true` can't load a multi-arch manifest
+        # into the daemon. The CVEs live in the shared base layers, so scanning the
+        # amd64 variant covers arm64 too.
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -82,12 +86,15 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Push image
+      - name: Push image (multi-arch)
         if: github.ref == 'refs/heads/main'
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
+          # Build for both arches so the image runs on amd64 clusters and on
+          # arm64 nodes (e.g. local kind on Apple Silicon).
+          platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/${{ github.repository }}:${{ github.sha }}
             ghcr.io/${{ github.repository }}:latest
