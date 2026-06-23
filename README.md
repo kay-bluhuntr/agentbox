@@ -139,22 +139,31 @@ All settings are environment variables prefixed `AGENTBOX_`:
 
 ## Deployment
 
-ArgoCD manifests and Helm charts are in [`deploy/`](deploy/). Separate value files exist for dev and prod:
+Deployment state is split across two repos:
+
+- **This repo** holds the application *and* its Helm chart + ArgoCD manifests — the
+  *what*.
+- **[`agentbox-gitops`](https://github.com/kay-bluhuntr/agentbox-gitops)** holds the
+  per-env values (`envs/dev`, `envs/prod`) — *which version runs where*. CI writes
+  image tags there, so **this repo's `main` only ever changes by human PR** (no bot
+  commits, so your `git push` is never rejected by a CI commit).
 
 ```
 deploy/
   helm/agentbox/        # Helm chart (Deployment/Rollout, RBAC, NetworkPolicy,
                         #   ResourceQuota, ServiceMonitor, PrometheusRule)
-  envs/dev/values.yaml  # fast iteration: plain Deployment, no canary
-  envs/prod/values.yaml # full pattern: ServiceMonitor + alerts + canary rollout
   argocd/               # App-of-apps root, AppProject, dev/prod Applications
   terraform/            # cluster-level infra
+
+agentbox-gitops/        # SEPARATE repo — deployment state
+  envs/dev/values.yaml  # fast iteration: plain Deployment, no canary
+  envs/prod/values.yaml # full pattern: ServiceMonitor + alerts + canary rollout
 ```
 
 The chart is feature-flagged so the same templates serve a bare kind cluster and a
 fully-instrumented production cluster. The CRD-dependent features default **off** in
 the base chart (so the kind dev path stays dependency-free) and are switched **on**
-in [`envs/prod/values.yaml`](deploy/envs/prod/values.yaml).
+in `agentbox-gitops`'s `envs/prod/values.yaml`.
 
 ### GitOps with ArgoCD
 
@@ -162,11 +171,12 @@ Deployment is pull-based: nobody runs `helm` against a real cluster by hand. Git
 the only deployment interface, and ArgoCD reconciles the cluster to match.
 
 ```
-git push ─► CI builds + scans image ─► CI commits image tag to envs/dev/values.yaml
-                                                  │
-                                      ArgoCD detects the change
-                                                  │
-                                   ArgoCD syncs the cluster to Git
+git push (app repo) ─► CI builds + scans image ─► CI writes image tag to
+                                                  agentbox-gitops envs/dev/values.yaml
+                                                          │
+                                              ArgoCD detects the change
+                                                          │
+                                       ArgoCD syncs the cluster to Git
 ```
 
 - **App-of-apps**: one root Application ([`argocd/root.yaml`](deploy/argocd/root.yaml))
@@ -177,9 +187,10 @@ git push ─► CI builds + scans image ─► CI commits image tag to envs/dev/
   ```
 - **Environments**: [`apps/dev.yaml`](deploy/argocd/apps/dev.yaml) and
   [`apps/prod.yaml`](deploy/argocd/apps/prod.yaml) are multi-source Applications — the
-  chart and the per-env `values.yaml` live at different paths of this repo. Both
-  auto-sync; the gate for prod is the **pull request** that changes
-  `envs/prod/values.yaml`, not a manual sync button.
+  chart comes from this repo, the per-env `values.yaml` from the `agentbox-gitops`
+  repo (the `$values` ref). Both auto-sync; the gate for prod is the **pull request**
+  against `agentbox-gitops` (run [`scripts/promote.sh`](scripts/promote.sh)), not a
+  manual sync button.
 - **AppProject guardrail** ([`apps/project.yaml`](deploy/argocd/apps/project.yaml)):
   an RBAC boundary that fences every Application to this repo and the AgentBox
   namespaces, and whitelists `Namespace` as the only cluster-scoped resource it may
@@ -188,9 +199,13 @@ git push ─► CI builds + scans image ─► CI commits image tag to envs/dev/
   default-deny `NetworkPolicy`, `ResourceQuota`, and RBAC *before* the control plane
   (wave 0), so the guardrails always exist before any workload can.
 
-> **Private repo note:** ArgoCD's repo-server needs credentials to read a private
-> repo — register a read-only deploy token (or an `argocd-repo-creds` Secret) or
-> Applications will fail to sync with `authentication required`.
+> **Credentials this split needs:**
+> - **ArgoCD** must be able to read both private repos (chart + `agentbox-gitops`) —
+>   register read-only repo creds (`argocd-repo-creds` Secret), or Applications fail
+>   to sync with `authentication required`.
+> - **CI** needs a `GITOPS_TOKEN` repo secret with write access to `agentbox-gitops`
+>   so the `deploy-dev` job can push the image-tag bump there (a fine-grained PAT or
+>   a deploy key).
 
 ### Observability
 

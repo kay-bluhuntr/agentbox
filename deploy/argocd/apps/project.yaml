@@ -15,9 +15,11 @@ metadata:
     - resources-finalizer.argocd.argoproj.io
 spec:
   description: AgentBox control plane and sandboxed execution
-  # Only this repo may be a source.
+  # Only these repos may be sources: the app repo (Helm chart) and the
+  # GitOps repo (per-env values / image tags).
   sourceRepos:
     - https://github.com/kay-bluhuntr/agentbox
+    - https://github.com/kay-bluhuntr/agentbox-gitops
   # Only these namespaces may be deployment targets.
   destinations:
     - server: https://kubernetes.default.svc
