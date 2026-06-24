@@ -80,7 +80,7 @@ jobs:
           tags: agentbox:${{ steps.vars.outputs.short_sha }}
       # Scan the built image for CVEs before it can be pushed
       - name: Scan image (Trivy)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: agentbox:${{ steps.vars.outputs.short_sha }}
           severity: HIGH,CRITICAL
