@@ -5,7 +5,7 @@ description = "A sandboxed execution service for AI agent workloads on Kubernete
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Kayode Odewale", email = "k.odewale@gmail.com" }]
+authors = [{ name = "Kayode Odewale", email = "61321539+kay-bluhuntr@users.noreply.github.com" }]
 dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
