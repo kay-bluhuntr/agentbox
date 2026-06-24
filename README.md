@@ -2,6 +2,70 @@
 
 A self-hosted execution service that runs arbitrary container workloads inside a Kubernetes cluster with hard isolation guardrails — built specifically for AI agent pipelines that need to execute untrusted or long-running code safely.
 
+## Architecture at a glance
+
+AgentBox ships as **two repositories**. This repo (`agentbox`) holds the application and *how* to build and deploy it; [`agentbox-gitops`](https://github.com/kay-bluhuntr/agentbox-gitops) holds the per-environment state ArgoCD reconciles — *which version runs where*. CI builds and pushes the image and bumps the **dev** tag in the GitOps repo; promotion to **prod** is a reviewed PR there. Nothing ever touches a cluster by hand.
+
+```mermaid
+flowchart TB
+    dev(["Developer"])
+
+    subgraph APP["📦 agentbox · application repo — the what"]
+        direction TB
+        code["App code + Dockerfile"]
+        chart["Helm chart<br/>deploy/helm"]
+        argo["ArgoCD manifests<br/>deploy/argocd"]
+        subgraph CI["GitHub Actions CI"]
+            direction LR
+            t["test<br/>lint · pytest"] --> s["security<br/>Checkov"] --> b["build<br/>multi-arch · Trivy<br/>tag = short SHA"] --> dd["deploy-dev"]
+        end
+    end
+
+    img[("🐳 GHCR image<br/>:short-sha + :latest")]
+
+    subgraph GITOPS["📂 agentbox-gitops · deployment state — which version, where"]
+        direction TB
+        edev["envs/dev/values.yaml<br/>tag bumped by CI"]
+        eprod["envs/prod/values.yaml<br/>tag bumped by promote PR"]
+    end
+
+    subgraph K8S["☸️ Kubernetes cluster — ArgoCD-managed"]
+        direction TB
+        acd{{"ArgoCD<br/>app-of-apps"}}
+        ddep["agentbox-dev<br/>Deployment · plain"]
+        prol["agentbox · prod<br/>Rollout · canary"]
+        exec["agentbox-exec*<br/>sandboxed Jobs<br/>default-deny NetworkPolicy"]
+        prom["Prometheus + Grafana<br/>ServiceMonitor · alerts · burn-rate SLO"]
+    end
+
+    dev -->|git push| code
+    code -->|triggers| t
+    b -->|push image| img
+    dd -->|writes image tag| edev
+    dev -.->|scripts/promote.sh · PR| eprod
+    argo -.->|kubectl apply root.yaml| acd
+
+    acd -->|reads chart| chart
+    acd -->|reads dev values| edev
+    acd -->|reads prod values| eprod
+    acd ==>|syncs| ddep
+    acd ==>|syncs| prol
+    img -.->|image pull| ddep
+    img -.->|image pull| prol
+    ddep -->|submits Jobs| exec
+    prol -->|submits Jobs| exec
+    prol <-.->|canary analysis| prom
+    prom -.->|scrape metrics| ddep
+    prom -.->|scrape metrics| prol
+
+    style APP fill:#eaf2ff,stroke:#3b6fb0,color:#111
+    style GITOPS fill:#eafbea,stroke:#3a9a3a,color:#111
+    style K8S fill:#fff4e6,stroke:#d08a2c,color:#111
+    style CI fill:#f3edff,stroke:#7d5fbf,color:#111
+```
+
+> **Reading the diagram:** solid arrows = Git/CI flow and ArgoCD reads · **thick** arrows = ArgoCD syncs to the cluster · dotted = image pulls, metric scraping, canary analysis, and the promotion/bootstrap steps. The app repo's `main` never receives automated commits — CI writes only to `agentbox-gitops`.
+
 ## The problem it solves
 
 When an AI agent needs to run code — execute a script, process a file, call a CLI tool — the naive approach is to shell out directly on the host or in the agent's own container. That means:
