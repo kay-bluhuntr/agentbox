@@ -17,6 +17,13 @@ kubectl create namespace agentbox --dry-run=client -o yaml | kubectl apply -f -
 PGPASS=$(kubectl -n agentbox get secret agentbox-db -o jsonpath='{.data.postgres-password}' 2>/dev/null | base64 -d || true)
 [ -n "${PGPASS}" ] || PGPASS=$(openssl rand -hex 16)
 
+# Create/update the secret first so the Postgres deployment can reference it
+# via secretKeyRef — prevents the password ever drifting between the two.
+kubectl -n agentbox create secret generic agentbox-db \
+  --from-literal=database-url="postgresql+psycopg://agentbox:${PGPASS}@postgres.agentbox.svc:5432/agentbox" \
+  --from-literal=postgres-password="${PGPASS}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
 # Dev-only Postgres
 kubectl -n agentbox apply -f - <<YAML
 apiVersion: apps/v1
@@ -33,7 +40,11 @@ spec:
           image: postgres:16-alpine
           env:
             - {name: POSTGRES_USER, value: agentbox}
-            - {name: POSTGRES_PASSWORD, value: "${PGPASS}"}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agentbox-db
+                  key: postgres-password
             - {name: POSTGRES_DB, value: agentbox}
           ports: [{containerPort: 5432}]
 ---
@@ -44,11 +55,6 @@ spec:
   selector: {app: postgres}
   ports: [{port: 5432}]
 YAML
-
-kubectl -n agentbox create secret generic agentbox-db \
-  --from-literal=database-url="postgresql+psycopg://agentbox:${PGPASS}@postgres.agentbox.svc:5432/agentbox" \
-  --from-literal=postgres-password="${PGPASS}" \
-  --dry-run=client -o yaml | kubectl apply -f -
 
 helm upgrade --install agentbox deploy/helm/agentbox \
   --namespace agentbox \
@@ -61,4 +67,4 @@ kubectl -n agentbox rollout status deploy/agentbox --timeout=120s
 echo
 echo "AgentBox is up. Try:"
 echo "  kubectl -n agentbox port-forward svc/agentbox 8080:80 &"
-echo "  ./scripts/smoke.sh"
+echo "  make smoke"
