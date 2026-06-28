@@ -125,8 +125,18 @@ CI builds the image and writes the new tag into `agentbox-gitops`, not here — 
 |---|---|
 | Local dev | Docker (Compose v2) |
 | kind cluster | Docker, [`kind`](https://kind.sigs.k8s.io/), `kubectl`, [`helm`](https://helm.sh/) v3 |
-| Full GitOps platform | the above + [`gh`](https://cli.github.com/) (GitHub CLI), a GitHub account that can create repos/secrets |
+| Full GitOps platform | the above + [`gh`](https://cli.github.com/) (GitHub CLI), a GitHub account that can create repos/set secrets |
 | Working on the code | Python 3.11+ |
+
+### Installing the kind cluster prerequisites
+
+```bash
+# macOS (Homebrew)
+brew install kind kubectl helm
+
+# Linux
+curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64 && chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
+```
 
 ---
 
@@ -150,6 +160,7 @@ make smoke    # submits a test session and polls it to success
 Spins up a kind cluster and deploys the **base chart** (plain `Deployment`, no ArgoCD/Prometheus/canary). This is the dependency-free path — nothing beyond kind is required.
 
 ```bash
+brew install kind kubectl helm   # macOS — skip if already installed
 make kind-up                                              # create cluster, build+load image, helm install
 kubectl -n agentbox port-forward svc/agentbox 8080:80 &   # Service is ClusterIP
 make smoke
@@ -289,31 +300,11 @@ helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
 
 **3. Make the image pullable**
 
-CI pushes a **multi-arch** image (`linux/amd64,linux/arm64`) to `ghcr.io/<owner>/agentbox`, so it runs on both real amd64 clusters and arm64 kind (Apple Silicon). GHCR packages are **private by default**, so the cluster needs pull access. Pick one:
+CI pushes a **multi-arch** image (`linux/amd64,linux/arm64`) to `ghcr.io/<owner>/agentbox`, so it runs on both real amd64 clusters and arm64 kind (Apple Silicon). The package is **public**, so anonymous pulls work everywhere — no credentials needed.
 
-- **Public package** (simplest for a demo): GitHub → your avatar → **Packages → agentbox → Package settings → Change visibility → Public**. Anonymous pulls then work everywhere.
-- **Private + imagePullSecret**: create a `dockerconfigjson` Secret from a PAT with `read:packages` and reference it from the workload's service account.
+**4. Give ArgoCD read access to both Git repos**
 
-**4. Give ArgoCD read access to both private Git repos**
-
-ArgoCD's repo-server clones the chart (this repo) and the values (`agentbox-gitops`). Register a credential **template keyed to your org prefix** — this matches every repo under the org regardless of a trailing `.git`, which avoids a subtle gotcha where an exact-URL credential registered with `.git` won't match an Application `repoURL` written without it:
-
-```bash
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: Secret
-metadata:
-  name: <owner>-repo-creds
-  namespace: argocd
-  labels:
-    argocd.argoproj.io/secret-type: repo-creds   # credential TEMPLATE, matched by URL prefix
-stringData:
-  type: git
-  url: https://github.com/<owner>
-  username: <owner>
-  password: <read-only PAT with repo:read>
-EOF
-```
+Both repos are public, so no credentials are required. ArgoCD's repo-server can clone them anonymously. Skip this step.
 
 **5. Give CI write access to the GitOps repo**
 
@@ -337,6 +328,11 @@ The chart deploys only the control plane; it expects a Postgres reachable via th
 seed_db() {  # usage: seed_db <namespace>
   ns="$1"; pw="$(openssl rand -hex 16)"
   kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
+  # Create the secret first so the Postgres deployment can reference it.
+  kubectl -n "$ns" create secret generic agentbox-db \
+    --from-literal=database-url="postgresql+psycopg://agentbox:${pw}@postgres.${ns}.svc:5432/agentbox" \
+    --from-literal=postgres-password="$pw" \
+    --dry-run=client -o yaml | kubectl apply -f -
   kubectl -n "$ns" apply -f - <<YAML
 apiVersion: apps/v1
 kind: Deployment
@@ -352,7 +348,11 @@ spec:
           image: postgres:16-alpine
           env:
             - {name: POSTGRES_USER, value: agentbox}
-            - {name: POSTGRES_PASSWORD, value: "$pw"}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agentbox-db
+                  key: postgres-password
             - {name: POSTGRES_DB, value: agentbox}
           ports: [{containerPort: 5432}]
 ---
@@ -361,10 +361,6 @@ kind: Service
 metadata: {name: postgres}
 spec: {selector: {app: postgres}, ports: [{port: 5432}]}
 YAML
-  kubectl -n "$ns" create secret generic agentbox-db \
-    --from-literal=database-url="postgresql+psycopg://agentbox:${pw}@postgres.${ns}.svc:5432/agentbox" \
-    --from-literal=postgres-password="$pw" \
-    --dry-run=client -o yaml | kubectl apply -f -
 }
 
 seed_db agentbox-dev
@@ -379,6 +375,20 @@ kubectl -n agentbox-dev get pods          # control-plane pod + postgres Running
 kubectl -n agentbox-dev port-forward svc/agentbox 8080:80 &
 make smoke
 ```
+
+**ArgoCD UI**
+
+```bash
+kubectl -n argocd port-forward svc/argocd-server 8443:443
+```
+
+Open **https://localhost:8443** (accept the self-signed cert warning).
+
+- **Username:** `admin`
+- **Password:** retrieve with:
+  ```bash
+  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d && echo
+  ```
 
 `agentbox-prod` will sit **OutOfSync** until you promote (its tag is `initial`, which was never built) — that's expected.
 
@@ -421,10 +431,9 @@ With `rollout.enabled`, the control plane ships as an [Argo Rollouts](https://ar
 ### Accessing the dashboards
 
 ```bash
-# ArgoCD UI — https://localhost:8081 (accept the self-signed cert)
-kubectl -n argocd port-forward svc/argocd-server 8081:443
-#   user: admin
-#   pass: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo
+# ArgoCD UI — https://localhost:8443 (accept the self-signed cert)
+# user: admin  |  pass: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d && echo
+kubectl -n argocd port-forward svc/argocd-server 8443:443
 
 # Prometheus — targets, rules, graph
 kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090
@@ -456,8 +465,8 @@ Issues you're likely to hit on a fresh cluster (all encountered and resolved dur
 |---|---|---|
 | `kubectl` commands fail / connection refused | Wrong context (e.g. `minikube`) | `kubectl config use-context kind-agentbox` |
 | ArgoCD install: `metadata.annotations: Too long` | ApplicationSet CRD too big for client-side apply | install with `kubectl apply --server-side` (add `--force-conflicts` if re-applying) |
-| App stuck `Unknown` / `ComparisonError: authentication required: Repository not found` | ArgoCD can't read the private repo, or the repo credential URL has a `.git` the Application `repoURL` lacks | register an org-prefix `repo-creds` template (step 4) so matching ignores the `.git` suffix |
-| Pod `ImagePullBackOff` → `401 Unauthorized` from ghcr.io | GHCR package is private with no pull creds | make the package public, or add an `imagePullSecret` (step 3) |
+| App stuck `Unknown` / `ComparisonError: Repository not found` | Repo URL mismatch — a `.git` suffix in the Application `repoURL` doesn't match the actual URL | correct the `repoURL` in `deploy/argocd/apps/` to match exactly |
+| Pod `ImagePullBackOff` → `401 Unauthorized` from ghcr.io | GHCR package visibility set to private | go to GitHub → Packages → agentbox → Package settings → **Change visibility → Public** |
 | Pod `ErrImagePull` → `no match for platform in manifest` | image is single-arch (amd64) but the node is arm64 (Apple Silicon kind) | ensure CI built multi-arch (it does); for a local image use `docker buildx --platform` or `kind load` an arm64 build |
 | Sync stuck retrying → `namespaces "agentbox-exec" not found` | a sync deleted the exec namespace mid-flight; RBAC reconcile races ahead of namespace creation | `kubectl create namespace agentbox-exec` to unblock, then let the sync finish |
 | Session submit fails with `(401) Unauthorized` from the K8s API | controller pods hold a stale token after their ServiceAccount was deleted+recreated | restart the pods: `kubectl -n <ns> delete pod -l app.kubernetes.io/name=agentbox` |

@@ -17,6 +17,8 @@ RUN groupadd -r agentbox && useradd -r -g agentbox -u 10001 agentbox
 COPY --from=build /install /usr/local
 COPY agentbox /app/agentbox
 
+RUN chmod -R a+rX /app/agentbox
+
 WORKDIR /app
 USER 10001
 
