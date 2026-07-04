@@ -211,6 +211,46 @@ PENDING → SCHEDULED → RUNNING → SUCCEEDED
            CANCELLED    TIMED_OUT
 ```
 
+## GPU-aware scheduling *(Phase 1 — [ROADMAP.md](ROADMAP.md))*
+
+A session can request a single GPU:
+
+```bash
+curl -X POST http://localhost:8080/v1/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "image": "python:3.12-slim",
+    "command": ["python", "-c", "print(\"hello from a GPU session\")"],
+    "gpu": { "count": 1, "type": "nvidia-t4" }
+  }'
+```
+
+`gpu.count` is `0` or `1` — one GPU per session for now. Sharing one GPU across
+sessions (MIG partitions or time-slicing) is a Phase 4 concern: it needs its
+own isolation story before it's safe for untrusted workloads, so it's
+deliberately out of scope here.
+
+**This is refused, not silently downgraded to CPU**, unless the deployment
+opts in with `AGENTBOX_GPU_ENABLED=true` (Helm: `gpu.enabled: true`). Turning
+that flag on is a promise about the cluster, not just the app: the GPU node
+pool must already carry —
+
+- a **taint**: `agentbox.io/gpu=true:NoSchedule` (keeps ordinary CPU sessions off it)
+- a **label**: `agentbox.io/node-pool=gpu` (lets the rendered pod target it)
+
+Both are required on the rendered Job's pod spec: a **toleration** alone only
+*permits* scheduling onto the tainted pool — a pod without the matching
+**nodeAffinity** could still land on any other untainted node and then fail
+to satisfy its GPU limit. The Helm chart also ships an NVIDIA device-plugin
+DaemonSet (`gpu.enabled`) so kubelet advertises the `nvidia.com/gpu` extended
+resource on those nodes in the first place.
+
+GPU is requested as a **limit only, with no explicit request** — Kubernetes
+fills the request in to match automatically for extended resources, and
+unlike CPU/memory there's no meaningful "ask for less than you'll use": a GPU
+isn't overcommittable the way CPU time or memory pages are, so requests and
+limits always mean the same thing.
+
 ## Configuration
 
 All settings are environment variables prefixed `AGENTBOX_`:
@@ -226,6 +266,11 @@ All settings are environment variables prefixed `AGENTBOX_`:
 | `AGENTBOX_DEFAULT_TIMEOUT_SECONDS` | `300` | Default if not specified per-request |
 | `AGENTBOX_MAX_RETRIES_CEILING` | `5` | Max retries a caller can request |
 | `AGENTBOX_RECONCILE_INTERVAL_SECONDS` | `2.0` | How often the reconciler polls |
+| `AGENTBOX_GPU_ENABLED` | `false` | Accept and schedule GPU session requests; requires a tainted/labelled GPU node pool (see above) |
+| `AGENTBOX_GPU_NODE_POOL_TAINT_KEY` | `agentbox.io/gpu` | Taint key the GPU node pool carries; rendered as the Job's toleration |
+| `AGENTBOX_GPU_NODE_POOL_TAINT_VALUE` | `true` | Taint value to match |
+| `AGENTBOX_GPU_NODE_POOL_LABEL` | `agentbox.io/node-pool` | Label key the GPU node pool carries; rendered as the Job's nodeAffinity |
+| `AGENTBOX_GPU_NODE_POOL_LABEL_VALUE` | `gpu` | Label value to match |
 
 ---
 
@@ -475,6 +520,30 @@ Issues you're likely to hit on a fresh cluster (all encountered and resolved dur
 | `git push` to this repo rejected (`fetch first`) repeatedly | a CI bot used to commit to `main` | resolved by the two-repo split; otherwise `git pull --rebase` (this repo sets `pull.rebase=true`) |
 
 ---
+
+## Roadmap ledger
+
+Tracking [ROADMAP.md](ROADMAP.md)'s GPU/inference extension. Each phase lists what's
+*verified by execution* versus *written, not yet exercised*, so this stays honest as it grows.
+
+**Phase 1 — GPU-aware session scheduling:** ✅ done.
+
+*Verified by execution:*
+- GPU Job rendering (resource limit, taint toleration, node affinity) and the
+  API's reject-not-downgrade behaviour — spec-assertion tests in
+  `tests/test_orchestrator_gpu.py`, full suite green.
+- Helm chart renders cleanly with `gpu.enabled=false` (default) **and**
+  `gpu.enabled=true`: `helm lint` + `helm template` + Checkov, zero failures
+  either way.
+- Full smoke run on `kind` with `gpu.enabled=false` (2026-07-04): chart
+  installed with the new image, batch session ran pending → scheduled →
+  running → succeeded with logs; a live GPU request returned **422 with a
+  clear error** (not silently scheduled to CPU); `gpu.count: 0` accepted as
+  a normal CPU session.
+
+*Written, not yet exercised:* the rendered toleration/affinity actually
+landing a pod on a physical GPU node, and the NVIDIA device-plugin DaemonSet
+advertising `nvidia.com/gpu` — that's Phase 3, once a real T4 node pool exists.
 
 ## Development
 

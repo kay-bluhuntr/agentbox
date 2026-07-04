@@ -23,6 +23,16 @@ containers:
             key: {{ .Values.database.secretKey }}
       - name: AGENTBOX_EXEC_NAMESPACE
         value: {{ .Values.execNamespace }}
+      - name: AGENTBOX_GPU_ENABLED
+        value: {{ .Values.gpu.enabled | quote }}
+      - name: AGENTBOX_GPU_NODE_POOL_TAINT_KEY
+        value: {{ .Values.gpu.nodePool.taintKey | quote }}
+      - name: AGENTBOX_GPU_NODE_POOL_TAINT_VALUE
+        value: {{ .Values.gpu.nodePool.taintValue | quote }}
+      - name: AGENTBOX_GPU_NODE_POOL_LABEL
+        value: {{ .Values.gpu.nodePool.label | quote }}
+      - name: AGENTBOX_GPU_NODE_POOL_LABEL_VALUE
+        value: {{ .Values.gpu.nodePool.labelValue | quote }}
     readinessProbe:
       httpGet: {path: /readyz, port: http}
       periodSeconds: 5
