@@ -147,6 +147,8 @@ class Reconciler:
             cpu_limit=s.cpu_limit,
             memory_limit=s.memory_limit,
             timeout_seconds=s.timeout_seconds,
+            gpu_count=s.gpu_count,
+            gpu_type=s.gpu_type,
         )
         try:
             s.executor_ref = self.executor.submit(spec)

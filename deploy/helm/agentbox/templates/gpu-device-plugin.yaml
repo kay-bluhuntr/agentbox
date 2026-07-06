@@ -1,0 +1,70 @@
+# NVIDIA device-plugin DaemonSet: makes kubelet advertise the nvidia.com/gpu
+# extended resource on GPU nodes, which is what lets the Jobs rendered by
+# agentbox/orchestrator/k8s.py request `resources.limits."nvidia.com/gpu"`.
+#
+# Runs in kube-system (not the agentbox-exec namespace): it needs a
+# privileged security context and a hostPath mount of /dev to talk to the
+# GPU driver, which the exec namespace's `restricted` Pod Security
+# admission label (see exec-namespace.yaml) would reject outright.
+#
+# This DaemonSet does not create the GPU node pool itself — the taint/label
+# below must already exist on the node group (see values.yaml gpu.nodePool
+# for the expected taint/label and why both matter).
+{{- if .Values.gpu.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvidia-device-plugin
+  namespace: kube-system
+  labels: {app.kubernetes.io/name: nvidia-device-plugin, app.kubernetes.io/managed-by: agentbox}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    # Everything skipped below is inherent to what a device plugin *is*: it
+    # talks directly to the host's NVIDIA driver/devices, which categorically
+    # requires privileged+root+hostPath and rules out a read-only rootfs or
+    # a restrictive seccomp profile. This mirrors NVIDIA's own upstream manifest.
+    checkov.io/skip1: "CKV_K8S_16=Device plugin needs privileged access to the host's GPU devices"
+    checkov.io/skip2: "CKV_K8S_20=Privilege escalation is required to bind the device-plugin gRPC socket as root"
+    checkov.io/skip3: "CKV_K8S_23=Must run as root to access /dev/nvidia* device nodes"
+    checkov.io/skip4: "CKV_K8S_22=hostPath device-plugin socket requires a writable rootfs"
+    checkov.io/skip5: "CKV_K8S_31=Custom seccomp profile would block direct device ioctls the plugin needs"
+    checkov.io/skip6: "CKV_K8S_28=NET_RAW is part of the default capability set; drop-all is unnecessary here since the container already runs privileged"
+    checkov.io/skip7: "CKV_K8S_37=Same as above: capability restrictions are moot under privileged:true"
+    checkov.io/skip8: "CKV_K8S_40=Upstream NVIDIA image runs as root by design; see CKV_K8S_23"
+    checkov.io/skip9: "CKV_K8S_43=Pinned to a released version tag; digest pinning tracked as future work alongside the main app image (see deployment.yaml skip4)"
+    checkov.io/skip10: "CKV_K8S_8=Device plugin exposes a gRPC socket, not an HTTP endpoint; no health path to probe"
+    checkov.io/skip11: "CKV_K8S_9=Same as above: no HTTP endpoint to probe"
+    checkov.io/skip12: "CKV_K8S_29=Container securityContext is set (privileged: true is the pod's only meaningful security context here)"
+spec:
+  selector:
+    matchLabels: {name: nvidia-device-plugin}
+  template:
+    metadata:
+      labels: {name: nvidia-device-plugin}
+    spec:
+      automountServiceAccountToken: false  # no Kubernetes API access needed
+      nodeSelector:
+        {{ .Values.gpu.nodePool.label }}: {{ .Values.gpu.nodePool.labelValue | quote }}
+      tolerations:
+        - key: {{ .Values.gpu.nodePool.taintKey }}
+          operator: Equal
+          value: {{ .Values.gpu.nodePool.taintValue | quote }}
+          effect: NoSchedule
+      priorityClassName: system-node-critical
+      containers:
+        - name: nvidia-device-plugin
+          image: {{ .Values.gpu.devicePlugin.image }}
+          imagePullPolicy: Always
+          securityContext:
+            privileged: true  # required: the plugin talks directly to the NVIDIA driver/devices
+          resources:
+            requests: {cpu: 50m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+          volumeMounts:
+            - name: device-plugin
+              mountPath: /var/lib/kubelet/device-plugins
+      volumes:
+        - name: device-plugin
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+{{- end }}

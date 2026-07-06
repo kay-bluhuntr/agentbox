@@ -23,6 +23,7 @@ from agentbox.orchestrator.base import WorkloadPhase, WorkloadSpec, WorkloadStat
 log = structlog.get_logger()
 
 MANAGED_BY = "agentbox"
+GPU_RESOURCE_NAME = "nvidia.com/gpu"
 
 
 class KubernetesExecutor:
@@ -37,6 +38,11 @@ class KubernetesExecutor:
                 config.load_kube_config()
         self.namespace = settings.exec_namespace
         self.service_account = settings.exec_service_account
+        self.gpu_enabled = settings.gpu_enabled
+        self.gpu_taint_key = settings.gpu_node_pool_taint_key
+        self.gpu_taint_value = settings.gpu_node_pool_taint_value
+        self.gpu_node_label = settings.gpu_node_pool_label
+        self.gpu_node_label_value = settings.gpu_node_pool_label_value
         self.batch = client.BatchV1Api()
         self.core = client.CoreV1Api()
 
@@ -49,6 +55,11 @@ class KubernetesExecutor:
     # -- Executor protocol ---------------------------------------------------
 
     def submit(self, spec: WorkloadSpec) -> str:
+        if spec.gpu_count > 0 and not self.gpu_enabled:
+            # Belt-and-braces: the API already rejects this at request time,
+            # but a stale row (created before gpu_enabled was flipped off)
+            # must not silently fall through to a CPU node.
+            raise ValueError("GPU scheduling is disabled on this deployment")
         name = self.job_name(spec.session_id, spec.attempt)
         job = self._build_job(name, spec)
         self.batch.create_namespaced_job(namespace=self.namespace, body=job)
@@ -123,6 +134,14 @@ class KubernetesExecutor:
             "agentbox.io/session-id": spec.session_id,
             "agentbox.io/attempt": str(spec.attempt),
         }
+        limits = {"cpu": spec.cpu_limit, "memory": spec.memory_limit}
+        if spec.gpu_count > 0:
+            # GPU gets limits only, no requests: it's a fixed, non-overcommittable
+            # device (unlike CPU/memory there's no meaningful "ask for less than
+            # you'll use"), and Kubernetes requires requests == limits for
+            # extended resources anyway — it fills requests in automatically.
+            limits[GPU_RESOURCE_NAME] = str(spec.gpu_count)
+
         container = client.V1Container(
             name="workload",
             image=spec.image,
@@ -130,7 +149,7 @@ class KubernetesExecutor:
             env=[client.V1EnvVar(name=k, value=v) for k, v in spec.env.items()],
             resources=client.V1ResourceRequirements(
                 requests={"cpu": "50m", "memory": "64Mi"},
-                limits={"cpu": spec.cpu_limit, "memory": spec.memory_limit},
+                limits=limits,
             ),
             security_context=client.V1SecurityContext(
                 run_as_non_root=True,
@@ -154,6 +173,36 @@ class KubernetesExecutor:
                 )
             ],
         )
+        if spec.gpu_count > 0:
+            # Toleration alone only *permits* scheduling onto the tainted GPU
+            # pool; without the matching affinity, a GPU pod could still land
+            # on an untainted CPU node with no way to satisfy the GPU limit.
+            # Both are required to actually pin the pod to the GPU pool.
+            pod_spec.tolerations = [
+                client.V1Toleration(
+                    key=self.gpu_taint_key,
+                    operator="Equal",
+                    value=self.gpu_taint_value,
+                    effect="NoSchedule",
+                )
+            ]
+            pod_spec.affinity = client.V1Affinity(
+                node_affinity=client.V1NodeAffinity(
+                    required_during_scheduling_ignored_during_execution=client.V1NodeSelector(
+                        node_selector_terms=[
+                            client.V1NodeSelectorTerm(
+                                match_expressions=[
+                                    client.V1NodeSelectorRequirement(
+                                        key=self.gpu_node_label,
+                                        operator="In",
+                                        values=[self.gpu_node_label_value],
+                                    )
+                                ]
+                            )
+                        ]
+                    )
+                )
+            )
         return client.V1Job(
             metadata=client.V1ObjectMeta(name=name, labels=labels),
             spec=client.V1JobSpec(

@@ -2,9 +2,18 @@
 
 A self-hosted execution service that runs arbitrary container workloads inside a Kubernetes cluster with hard isolation guardrails — built specifically for AI agent pipelines that need to execute untrusted or long-running code safely.
 
+**Contents:** [Architecture](#architecture-at-a-glance) · [The problem it solves](#the-problem-it-solves) · [How it works](#how-it-works) · [Key guarantees](#key-guarantees) · [Prerequisites](#prerequisites) · [Quickstart](#quickstart) · [API](#api) · [Session lifecycle](#session-lifecycle) · [GPU scheduling](#gpu-aware-scheduling-phase-1) · [Configuration](#configuration) · [The GitOps platform](#the-gitops-platform) · [CI/CD pipeline](#cicd-pipeline) · [Troubleshooting](#troubleshooting) · [Development](#development) · [Roadmap ledger](#roadmap-ledger)
+
 ## Architecture at a glance
 
-AgentBox ships as **two repositories**. This repo (`agentbox`) holds the application and *how* to build and deploy it; [`agentbox-gitops`](https://github.com/kay-bluhuntr/agentbox-gitops) holds the per-environment state ArgoCD reconciles — *which version runs where*. CI builds and pushes the image and bumps the **dev** tag in the GitOps repo; promotion to **prod** is a reviewed PR there. Nothing ever touches a cluster by hand.
+AgentBox ships as **two repositories**, so the application repo's `main` never receives automated commits:
+
+| Repo | Holds | Changes via |
+|---|---|---|
+| **`agentbox`** (this repo) | application code, Dockerfile, Helm chart, ArgoCD manifests, Terraform — *the what* | human PRs only |
+| **[`agentbox-gitops`](https://github.com/kay-bluhuntr/agentbox-gitops)** | per-environment values + pinned image tags (`envs/dev`, `envs/prod`) — *which version runs where* | CI (dev tag) and promotion PRs (prod tag) |
+
+CI builds and pushes the image, then bumps the **dev** tag in `agentbox-gitops`; promotion to **prod** is a reviewed PR there. ArgoCD reconciles the cluster to whatever Git says — nothing ever touches a cluster by hand, and `git push` against this repo is never rejected by a CI bot commit. Details in [CI/CD pipeline](#cicd-pipeline) and [The GitOps platform](#the-gitops-platform).
 
 ```mermaid
 flowchart TB
@@ -106,17 +115,6 @@ Agent  ──POST /v1/sessions──►  AgentBox API  ──(async)──►  K
 | Duplicate driving | Postgres advisory lock ensures exactly one reconciler runs across replicas |
 | Flaky infra | Per-session retry budget with jitter backoff, tracked in Postgres |
 
-## Two repositories
-
-Deployment state is split across two repos so the application repo's `main` never receives automated commits:
-
-| Repo | Holds | Changes via |
-|---|---|---|
-| **`agentbox`** (this repo) | application code, Dockerfile, Helm chart, ArgoCD manifests, Terraform — *the what* | human PRs only |
-| **[`agentbox-gitops`](https://github.com/kay-bluhuntr/agentbox-gitops)** | per-environment values + pinned image tags (`envs/dev`, `envs/prod`) — *which version runs where* | CI (dev tag) and promotion PRs (prod tag) |
-
-CI builds the image and writes the new tag into `agentbox-gitops`, not here — so `git push` against this repo is never rejected by a CI bot commit. See [CI/CD pipeline](#cicd-pipeline) and [The GitOps platform](#the-gitops-platform).
-
 ---
 
 ## Prerequisites
@@ -146,21 +144,21 @@ There are three ways to run AgentBox, in increasing order of completeness. Pick 
 
 ### A. Local dev — no cluster (fastest)
 
-Runs the API + Postgres via docker-compose with the in-process "local" executor (workloads run as subprocesses, not Jobs). Good for working on the API/reconciler.
+Runs the API + Postgres via docker-compose with the in-process "local" executor (workloads run as subprocesses, not Jobs). Good for working on the API/reconciler. Needs Docker only.
 
 ```bash
-make dev      # builds + starts API + Postgres (creates .env from .env.example on first run)
+make dev-up  # builds + starts API + Postgres (creates .env from .env.example on first run)
 make smoke    # submits a test session and polls it to success
+make dev-down
 ```
 
 `make smoke` targets `http://localhost:8080` (override with `AGENTBOX_HOST`); docker-compose publishes that port directly.
 
 ### B. Single-node kind — real Kubernetes, no GitOps
 
-Spins up a kind cluster and deploys the **base chart** (plain `Deployment`, no ArgoCD/Prometheus/canary). This is the dependency-free path — nothing beyond kind is required.
+Spins up a kind cluster and deploys the **base chart** (plain `Deployment` — no ArgoCD, Prometheus, or canary machinery). Needs the [kind cluster prerequisites](#prerequisites) above, nothing more.
 
 ```bash
-brew install kind kubectl helm   # macOS — skip if already installed
 make kind-up                                              # create cluster, build+load image, helm install
 kubectl -n agentbox port-forward svc/agentbox 8080:80 &   # Service is ClusterIP
 make smoke
@@ -170,7 +168,7 @@ make smoke
 
 ### C. Full GitOps platform on kind
 
-The real thing: ArgoCD pulls the chart + env values from Git and reconciles dev and prod, with Prometheus scraping and canary rollouts. This is the [setup guide below](#full-setup-from-scratch).
+The real thing: ArgoCD pulls the chart + env values from Git and reconciles dev and prod, with Prometheus scraping and canary rollouts. Follow the [full setup from scratch](#full-setup-from-scratch).
 
 ---
 
@@ -196,20 +194,50 @@ curl -X POST http://localhost:8080/v1/sessions \
 ### Poll / logs / cancel
 
 ```bash
-curl http://localhost:8080/v1/sessions/<id>
-curl http://localhost:8080/v1/sessions/<id>/logs
-curl -X DELETE http://localhost:8080/v1/sessions/<id>
+curl http://localhost:8080/v1/sessions/<id>          # poll state
+curl http://localhost:8080/v1/sessions/<id>/logs     # fetch logs
+curl -X DELETE http://localhost:8080/v1/sessions/<id> # cancel
 ```
 
 ## Session lifecycle
 
+The state machine ([`agentbox/state.py`](agentbox/state.py)) is the single source of truth for legal transitions — every component goes through it, so an illegal move is a loud error rather than silent state corruption:
+
 ```
-PENDING → SCHEDULED → RUNNING → SUCCEEDED
-                ↓           ↓
-             FAILED      FAILED → RETRYING → SCHEDULED (retry loop)
-                ↓           ↓
-           CANCELLED    TIMED_OUT
+PENDING ──► SCHEDULED ──► RUNNING ──► SUCCEEDED
+               │             │
+               │             ├──► FAILED ──► RETRYING ──► SCHEDULED
+               │             ├──► TIMED_OUT
+               ▼             ▼
+            CANCELLED     CANCELLED
 ```
+
+`SUCCEEDED`, `TIMED_OUT`, `CANCELLED` — and `FAILED`, once the retry budget is exhausted — are terminal. Short workloads can finish between reconcile ticks, so `SCHEDULED` may jump straight to `SUCCEEDED`/`FAILED` without `RUNNING` ever being observed.
+
+## GPU-aware scheduling (Phase 1)
+
+*Phase 1 of [ROADMAP.md](ROADMAP.md).* A session can request a single GPU:
+
+```bash
+curl -X POST http://localhost:8080/v1/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "image": "python:3.12-slim",
+    "command": ["python", "-c", "print(\"hello from a GPU session\")"],
+    "gpu": { "count": 1, "type": "nvidia-t4" }
+  }'
+```
+
+`gpu.count` is `0` or `1` — one GPU per session for now. Sharing one GPU across sessions (MIG partitions or time-slicing) needs its own isolation story before it's safe for untrusted workloads, so it's deliberately deferred to Phase 4.
+
+A GPU request is **refused with a 422, never silently downgraded to CPU**, unless the deployment opts in with `AGENTBOX_GPU_ENABLED=true` (Helm: `gpu.enabled: true`). Turning that flag on is a promise about the cluster, not just the app — the GPU node pool must already carry:
+
+- a **taint** `agentbox.io/gpu=true:NoSchedule`, which keeps ordinary CPU sessions off the pool, and
+- a **label** `agentbox.io/node-pool=gpu`, which the rendered Job targets via `nodeAffinity`.
+
+Both end up on the rendered Job's pod spec, and both matter: a toleration alone only *permits* scheduling onto the tainted pool — without the matching `nodeAffinity`, the pod could land on any untainted node and never satisfy its GPU limit. With `gpu.enabled`, the chart also ships the NVIDIA device-plugin DaemonSet so kubelet advertises the `nvidia.com/gpu` extended resource on those nodes in the first place.
+
+The GPU is rendered as a **limit only, with no explicit request**: Kubernetes fills the request in to match for extended resources, and a GPU isn't overcommittable the way CPU time or memory pages are — requests and limits always mean the same thing.
 
 ## Configuration
 
@@ -226,6 +254,11 @@ All settings are environment variables prefixed `AGENTBOX_`:
 | `AGENTBOX_DEFAULT_TIMEOUT_SECONDS` | `300` | Default if not specified per-request |
 | `AGENTBOX_MAX_RETRIES_CEILING` | `5` | Max retries a caller can request |
 | `AGENTBOX_RECONCILE_INTERVAL_SECONDS` | `2.0` | How often the reconciler polls |
+| `AGENTBOX_GPU_ENABLED` | `false` | Accept and schedule GPU session requests; requires a tainted/labelled GPU node pool (see above) |
+| `AGENTBOX_GPU_NODE_POOL_TAINT_KEY` | `agentbox.io/gpu` | Taint key the GPU node pool carries; rendered as the Job's toleration |
+| `AGENTBOX_GPU_NODE_POOL_TAINT_VALUE` | `true` | Taint value to match |
+| `AGENTBOX_GPU_NODE_POOL_LABEL` | `agentbox.io/node-pool` | Label key the GPU node pool carries; rendered as the Job's nodeAffinity |
+| `AGENTBOX_GPU_NODE_POOL_LABEL_VALUE` | `gpu` | Label value to match |
 
 ---
 
@@ -268,6 +301,8 @@ git push (app repo) ─► CI builds + scans + pushes image ─► CI writes the
 This reproduces, as repeatable steps, everything needed to bring up the full platform on a fresh kind cluster. Replace `kay-bluhuntr` with your GitHub org/user throughout.
 
 > **One-time GitHub setup.** The manifests reference `github.com/kay-bluhuntr/agentbox` and `…/agentbox-gitops`. If you forked/renamed, update the `repoURL`s in `deploy/argocd/**` and `image.repository` in the chart/values, and the `agentbox-gitops` URLs in `.github/workflows/ci.yml` and `scripts/promote.sh`.
+>
+> **No read credentials are needed anywhere.** CI publishes a public **multi-arch** (`amd64`+`arm64`) image to `ghcr.io/<owner>/agentbox`, so anonymous pulls work on real amd64 clusters and arm64 kind (Apple Silicon) alike; both Git repos are public, so ArgoCD clones them anonymously.
 
 **1. Create the cluster and the base deployment**
 
@@ -298,15 +333,7 @@ helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
   -n monitoring --create-namespace --set alertmanager.enabled=false --wait
 ```
 
-**3. Make the image pullable**
-
-CI pushes a **multi-arch** image (`linux/amd64,linux/arm64`) to `ghcr.io/<owner>/agentbox`, so it runs on both real amd64 clusters and arm64 kind (Apple Silicon). The package is **public**, so anonymous pulls work everywhere — no credentials needed.
-
-**4. Give ArgoCD read access to both Git repos**
-
-Both repos are public, so no credentials are required. ArgoCD's repo-server can clone them anonymously. Skip this step.
-
-**5. Give CI write access to the GitOps repo**
+**3. Give CI write access to the GitOps repo**
 
 The `deploy-dev` CI job pushes the image-tag bump to `agentbox-gitops`, which the workflow's built-in `GITHUB_TOKEN` can't reach (different repo). Add a `GITOPS_TOKEN` secret to *this* repo — a fine-grained PAT with **Contents: write** on `agentbox-gitops`:
 
@@ -314,13 +341,13 @@ The `deploy-dev` CI job pushes the image-tag bump to `agentbox-gitops`, which th
 gh secret set GITOPS_TOKEN --repo <owner>/agentbox
 ```
 
-**6. Bootstrap ArgoCD**
+**4. Bootstrap ArgoCD**
 
 ```bash
 kubectl apply -f deploy/argocd/root.yaml   # app-of-apps → creates AppProject + dev/prod Applications
 ```
 
-**7. Seed a database per ArgoCD-managed namespace**
+**5. Seed a database per ArgoCD-managed namespace**
 
 The chart deploys only the control plane; it expects a Postgres reachable via the `agentbox-db` secret it reads. (Production would point this at managed Postgres — see [`deploy/terraform`](deploy/terraform).) For kind, seed a throwaway Postgres + secret in each target namespace (`agentbox-dev` for dev, `agentbox` for prod):
 
@@ -367,7 +394,7 @@ seed_db agentbox-dev
 seed_db agentbox        # only if running prod here
 ```
 
-**8. Verify dev is green**
+**6. Verify dev is green**
 
 ```bash
 kubectl -n argocd get applications        # agentbox-dev should reach Synced / Healthy
@@ -376,21 +403,7 @@ kubectl -n agentbox-dev port-forward svc/agentbox 8080:80 &
 make smoke
 ```
 
-**ArgoCD UI**
-
-```bash
-kubectl -n argocd port-forward svc/argocd-server 8443:443
-```
-
-Open **https://localhost:8443** (accept the self-signed cert warning).
-
-- **Username:** `admin`
-- **Password:** retrieve with:
-  ```bash
-  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d && echo
-  ```
-
-`agentbox-prod` will sit **OutOfSync** until you promote (its tag is `initial`, which was never built) — that's expected.
+To watch the sync happen, open the ArgoCD UI — see [Accessing the dashboards](#accessing-the-dashboards). `agentbox-prod` will sit **OutOfSync** until you promote (its tag is `initial`, which was never built) — that's expected.
 
 ### Deploying to prod (promotion)
 
@@ -455,6 +468,18 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
 
 Promotion to prod is a separate, human-reviewed PR against `agentbox-gitops` (`scripts/promote.sh`).
 
+### Reproducing the image scan locally
+
+Run the same Trivy gate as the **build** job before pushing:
+
+```bash
+make scan   # builds agentbox:dev, then scans with the CI flags (HIGH/CRITICAL fail, .trivyignore applied)
+```
+
+Uses the local `trivy` binary if installed (`brew install trivy`), otherwise falls back to running Trivy in Docker (the vulnerability DB is cached in a `trivy-db-cache` volume, so only the first run is slow). Exit code 0 means the CI scan will pass. Note CI scans the `amd64` build while a local Apple Silicon build is `arm64` — the OS-package CVEs live in the shared Debian base layers, so results match in practice.
+
+Findings with an **empty "Fixed Version"** can't be resolved by rebuilding (Debian hasn't shipped a patch); after an exploitability review, record them in [`.trivyignore`](.trivyignore) with a justification comment, as the existing entries do.
+
 ---
 
 ## Troubleshooting
@@ -488,4 +513,29 @@ pip install -e ".[dev]"
 make test       # run the test suite (SQLite + stub executor — no cluster needed)
 make lint       # ruff check
 make typecheck  # mypy
+make scan       # build the image and Trivy-scan it with the CI gates
 ```
+
+## Roadmap ledger
+
+Tracking [ROADMAP.md](ROADMAP.md)'s GPU/inference extension. Each phase lists what's
+*verified by execution* versus *written, not yet exercised*, so this stays honest as it grows.
+
+**Phase 1 — GPU-aware session scheduling:** ✅ done.
+
+*Verified by execution:*
+- GPU Job rendering (resource limit, taint toleration, node affinity) and the
+  API's reject-not-downgrade behaviour — spec-assertion tests in
+  `tests/test_orchestrator_gpu.py`, full suite green.
+- Helm chart renders cleanly with `gpu.enabled=false` (default) **and**
+  `gpu.enabled=true`: `helm lint` + `helm template` + Checkov, zero failures
+  either way.
+- Full smoke run on `kind` with `gpu.enabled=false` (2026-07-04): chart
+  installed with the new image, batch session ran pending → scheduled →
+  running → succeeded with logs; a live GPU request returned **422 with a
+  clear error** (not silently scheduled to CPU); `gpu.count: 0` accepted as
+  a normal CPU session.
+
+*Written, not yet exercised:* the rendered toleration/affinity actually
+landing a pod on a physical GPU node, and the NVIDIA device-plugin DaemonSet
+advertising `nvidia.com/gpu` — that's Phase 3, once a real T4 node pool exists.

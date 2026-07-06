@@ -46,6 +46,8 @@ def create_session(req: CreateSessionRequest, db: DbSession = Depends(get_db)):
         memory_limit=req.memory_limit or settings.default_memory_limit,
         timeout_seconds=req.timeout_seconds or settings.default_timeout_seconds,
         max_retries=req.max_retries,
+        gpu_count=req.gpu.count if req.gpu else 0,
+        gpu_type=req.gpu.type if req.gpu and req.gpu.count > 0 else None,
     )
     db.add(session)
     db.commit()

@@ -47,6 +47,8 @@ class Session(Base):
     memory_limit: Mapped[str] = mapped_column(String(20))
     timeout_seconds: Mapped[int] = mapped_column(Integer)
     max_retries: Mapped[int] = mapped_column(Integer, default=0)
+    gpu_count: Mapped[int] = mapped_column(Integer, default=0)
+    gpu_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Execution tracking
     attempt: Mapped[int] = mapped_column(Integer, default=0)

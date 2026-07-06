@@ -21,6 +21,24 @@ resources:
     cpu: 500m
     memory: 256Mi
 
+# GPU-aware scheduling (Phase 1 of ROADMAP.md). Off by default: enabling this
+# only tells the control plane it's allowed to accept GPU requests — it does
+# NOT create a GPU node pool. Before flipping this on, the cluster's GPU node
+# pool must already carry:
+#   - taint:  agentbox.io/gpu=true:NoSchedule   (keeps ordinary CPU workloads off it)
+#   - label:  agentbox.io/node-pool=gpu         (lets the rendered nodeAffinity target it)
+# devicePlugin installs the NVIDIA k8s-device-plugin DaemonSet so kubelet
+# advertises the nvidia.com/gpu extended resource on those nodes.
+gpu:
+  enabled: false
+  nodePool:
+    taintKey: agentbox.io/gpu
+    taintValue: "true"
+    label: agentbox.io/node-pool
+    labelValue: gpu
+  devicePlugin:
+    image: nvcr.io/nvidia/k8s-device-plugin:v0.15.0
+
 # Guardrails applied to the execution namespace
 execQuota:
   pods: "50"

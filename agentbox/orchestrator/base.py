@@ -39,6 +39,8 @@ class WorkloadSpec:
     cpu_limit: str
     memory_limit: str
     timeout_seconds: int
+    gpu_count: int = 0
+    gpu_type: str | None = None
 
 
 class Executor(Protocol):

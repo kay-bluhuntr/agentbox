@@ -33,6 +33,16 @@ class Settings(BaseSettings):
     default_timeout_seconds: int = 300
     max_retries_ceiling: int = 5
 
+    # GPU scheduling (Phase 1). Off by default: a deployment without a tainted
+    # GPU node pool must reject GPU requests rather than silently running them
+    # on CPU nodes. Taint/label values must match what the node pool actually
+    # carries (see deploy/helm/agentbox/values.yaml gpu.nodePool.*).
+    gpu_enabled: bool = False
+    gpu_node_pool_taint_key: str = "agentbox.io/gpu"
+    gpu_node_pool_taint_value: str = "true"
+    gpu_node_pool_label: str = "agentbox.io/node-pool"
+    gpu_node_pool_label_value: str = "gpu"
+
     # Reconciler
     reconcile_interval_seconds: float = 2.0
     retry_backoff_base_seconds: float = 5.0

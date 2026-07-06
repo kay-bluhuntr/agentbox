@@ -13,6 +13,13 @@ from pydantic import BaseModel, Field, field_validator
 from agentbox.config import get_settings
 
 
+class GpuRequest(BaseModel):
+    # Single-GPU sessions only for now; MIG/time-slicing (fractional/multi-GPU
+    # sharing) is Phase 4 territory and needs its own isolation story first.
+    count: int = Field(..., ge=0, le=1)
+    type: str = Field(..., min_length=1, max_length=64, examples=["nvidia-t4"])
+
+
 class CreateSessionRequest(BaseModel):
     image: str = Field(..., min_length=1, max_length=512, examples=["python:3.12-slim"])
     command: list[str] = Field(..., min_length=1, examples=[["python", "-c", "print('hi')"]])
@@ -21,6 +28,19 @@ class CreateSessionRequest(BaseModel):
     memory_limit: str | None = Field(default=None, examples=["512Mi"])
     timeout_seconds: int | None = Field(default=None, ge=1)
     max_retries: int = Field(default=0, ge=0)
+    gpu: GpuRequest | None = Field(default=None)
+
+    @field_validator("gpu")
+    @classmethod
+    def gpu_requires_enabled_deployment(cls, v: GpuRequest | None) -> GpuRequest | None:
+        if v is None or v.count == 0:
+            return v
+        if not get_settings().gpu_enabled:
+            raise ValueError(
+                "GPU scheduling is disabled on this deployment "
+                "(set AGENTBOX_GPU_ENABLED=true and provision a tainted GPU node pool)"
+            )
+        return v
 
     @field_validator("timeout_seconds")
     @classmethod
@@ -53,6 +73,8 @@ class SessionResponse(BaseModel):
     attempt: int
     max_retries: int
     timeout_seconds: int
+    gpu_count: int
+    gpu_type: str | None
     exit_code: int | None
     failure_reason: str | None
     created_at: datetime

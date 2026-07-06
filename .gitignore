@@ -9,3 +9,4 @@ __pycache__/
 .terraform/
 *.tfstate*
 .terraform.lock.hcl
+.claude/
