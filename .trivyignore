@@ -1,4 +1,4 @@
-# CVEs with no available fix in Debian Bookworm as of 2026-06-21.
+# CVEs with no available fix in Debian Bookworm as of 2026-07-06.
 # Reviewed: apt-get upgrade is run at build time so any released patch is applied.
 # These packages can't simply be removed — libtinfo6/ncurses are bash pre-deps,
 # perl-base is marked essential, and libsqlite3-0/zlib1g back the Python stdlib.
@@ -17,6 +17,21 @@ CVE-2026-11824
 
 # ncurses: buffer overflow — no Debian fix available (status: affected)
 CVE-2025-69720
+
+# gzip: global buffer overflow in the LZH decompression path — no Debian fix
+# available (status: affected, reviewed 2026-07-06)
+# Impact: only triggered by decompressing crafted LZH archives; agentbox never
+# invokes gzip on user-supplied input, let alone LZH archives. gzip is
+# priority:required in Debian so it can't be removed from the image.
+CVE-2026-41992
+
+# libacl1: symlink traversal privilege escalation via libacl functions — no
+# Debian fix available (status: affected, reviewed 2026-07-06)
+# Impact: requires a local attacker pre-placing symlinks while a privileged
+# process manipulates ACLs; the container runs as a fixed non-root user, has no
+# untrusted local users, and agentbox never calls ACL functions. libacl1 is a
+# hard dependency of coreutils so it can't be removed.
+CVE-2026-54369
 
 # perl-base: multiple CVEs — fix_deferred or affected (no released Debian patch)
 CVE-2026-42496

@@ -23,6 +23,7 @@ services:
     environment:
       AGENTBOX_DATABASE_URL: postgresql+psycopg://agentbox:${POSTGRES_PASSWORD}@postgres:5432/agentbox
       AGENTBOX_EXECUTOR: local
+      AGENTBOX_GPU_ENABLED: ${AGENTBOX_GPU_ENABLED:-false}
     ports:
       - "8080:8080"
     depends_on:
